@@ -1,0 +1,82 @@
+[
+  {
+    "frame": 0,
+    "timestamp": 0.0,
+    "position": [
+      239,
+      239
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 230400
+  },
+  {
+    "frame": 49,
+    "timestamp": 1.6332801302931594,
+    "position": [
+      120,
+      48
+    ],
+    "confidence": 0.742,
+    "motion_pixels": 742
+  },
+  {
+    "frame": 50,
+    "timestamp": 1.6666123778501627,
+    "position": [
+      114,
+      48
+    ],
+    "confidence": 0.864,
+    "motion_pixels": 864
+  },
+  {
+    "frame": 51,
+    "timestamp": 1.699944625407166,
+    "position": [
+      119,
+      48
+    ],
+    "confidence": 0.847,
+    "motion_pixels": 847
+  },
+  {
+    "frame": 52,
+    "timestamp": 1.7332768729641692,
+    "position": [
+      119,
+      48
+    ],
+    "confidence": 0.82,
+    "motion_pixels": 820
+  },
+  {
+    "frame": 53,
+    "timestamp": 1.7666091205211725,
+    "position": [
+      118,
+      48
+    ],
+    "confidence": 0.784,
+    "motion_pixels": 784
+  },
+  {
+    "frame": 54,
+    "timestamp": 1.7999413680781757,
+    "position": [
+      115,
+      48
+    ],
+    "confidence": 0.795,
+    "motion_pixels": 795
+  },
+  {
+    "frame": 55,
+    "timestamp": 1.833273615635179,
+    "position": [
+      113,
+      47
+    ],
+    "confidence": 0.625,
+    "motion_pixels": 625
+  }
+]

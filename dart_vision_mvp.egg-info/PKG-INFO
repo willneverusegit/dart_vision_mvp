@@ -1,0 +1,9 @@
+Metadata-Version: 2.1
+Name: dart-vision-mvp
+Version: 0.1.0
+Summary: CPU-optimized dart vision system
+Author: DoMe
+Requires-Python: >=3.10
+Requires-Dist: opencv-python>=4.8.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: pyyaml>=6.0

@@ -1,0 +1,112 @@
+[
+  {
+    "frame": 0,
+    "timestamp": 0.0,
+    "position": [
+      239,
+      239
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 230400
+  },
+  {
+    "frame": 5,
+    "timestamp": 0.1666612377850163,
+    "position": [
+      177,
+      47
+    ],
+    "confidence": 0.569,
+    "motion_pixels": 569
+  },
+  {
+    "frame": 49,
+    "timestamp": 1.6332801302931594,
+    "position": [
+      122,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1285
+  },
+  {
+    "frame": 50,
+    "timestamp": 1.6666123778501627,
+    "position": [
+      115,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1547
+  },
+  {
+    "frame": 51,
+    "timestamp": 1.699944625407166,
+    "position": [
+      119,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1520
+  },
+  {
+    "frame": 52,
+    "timestamp": 1.7332768729641692,
+    "position": [
+      119,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1495
+  },
+  {
+    "frame": 53,
+    "timestamp": 1.7666091205211725,
+    "position": [
+      118,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1458
+  },
+  {
+    "frame": 54,
+    "timestamp": 1.7999413680781757,
+    "position": [
+      116,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1431
+  },
+  {
+    "frame": 55,
+    "timestamp": 1.833273615635179,
+    "position": [
+      118,
+      48
+    ],
+    "confidence": 1.0,
+    "motion_pixels": 1049
+  },
+  {
+    "frame": 56,
+    "timestamp": 1.8666058631921822,
+    "position": [
+      139,
+      48
+    ],
+    "confidence": 0.75,
+    "motion_pixels": 750
+  },
+  {
+    "frame": 57,
+    "timestamp": 1.8999381107491855,
+    "position": [
+      142,
+      48
+    ],
+    "confidence": 0.568,
+    "motion_pixels": 568
+  }
+]
