@@ -1,0 +1,324 @@
+"""
+Dart Impact Detector with Temporal Confirmation
+Detects dart impacts using shape analysis and temporal stability.
+
+Features:
+- Multi-frame confirmation (Land-and-Stick logic)
+- Shape-based dart detection
+- False positive filtering
+"""
+
+import cv2
+import numpy as np
+import logging
+from typing import Optional, List, Tuple
+from dataclasses import dataclass
+from collections import deque
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class DartCandidate:
+    """Potential dart detection"""
+    position: Tuple[int, int]
+    area: float
+    confidence: float
+    frame_index: int
+    timestamp: float
+    aspect_ratio: float
+
+
+@dataclass
+class DartImpact:
+    """Confirmed dart impact"""
+    position: Tuple[int, int]
+    confidence: float
+    first_detected_frame: int
+    confirmed_frame: int
+    confirmation_count: int
+    timestamp: float
+
+
+@dataclass
+class DartDetectorConfig:
+    """Dart detector configuration"""
+    # Shape constraints
+    min_area: int = 10
+    max_area: int = 1000
+    min_aspect_ratio: float = 0.3
+    max_aspect_ratio: float = 3.0
+
+    # Temporal confirmation
+    confirmation_frames: int = 3  # Frames needed to confirm
+    position_tolerance_px: int = 20  # Max pixel distance for same dart
+
+    # History
+    candidate_history_size: int = 20
+
+
+class DartImpactDetector:
+    """
+    Dart impact detector with temporal confirmation.
+
+    Uses "Land-and-Stick" logic: A dart must be stable
+    for multiple frames before confirmation.
+    """
+
+    def __init__(self, config: Optional[DartDetectorConfig] = None):
+        self.config = config or DartDetectorConfig()
+
+        # Tracking
+        self.current_candidate: Optional[DartCandidate] = None
+        self.confirmation_count = 0
+
+        # History
+        self.candidate_history: deque = deque(maxlen=self.config.candidate_history_size)
+        self.confirmed_impacts: List[DartImpact] = []
+
+    def detect_dart(
+            self,
+            frame: np.ndarray,
+            motion_mask: np.ndarray,
+            frame_index: int,
+            timestamp: float
+    ) -> Optional[DartImpact]:
+        """
+        Detect dart impact with temporal confirmation.
+
+        Args:
+            frame: Input frame (BGR or grayscale)
+            motion_mask: Motion foreground mask
+            frame_index: Frame number
+            timestamp: Frame timestamp
+
+        Returns:
+            Confirmed DartImpact if detection passes temporal test, else None
+        """
+        # Find dart-like shapes in motion mask
+        candidates = self._find_dart_shapes(frame, motion_mask, frame_index, timestamp)
+
+        if not candidates:
+            # No candidates, reset tracking
+            self._reset_tracking()
+            return None
+
+        # Get best candidate
+        best_candidate = candidates[0]
+        self.candidate_history.append(best_candidate)
+
+        # Check temporal stability
+        if self._is_same_position(best_candidate, self.current_candidate):
+            # Same position as before, increment confirmation
+            self.confirmation_count += 1
+        else:
+            # New position, reset tracking
+            self.current_candidate = best_candidate
+            self.confirmation_count = 1
+
+        # Check if confirmed
+        if self.confirmation_count >= self.config.confirmation_frames:
+            # Dart confirmed!
+            impact = DartImpact(
+                position=best_candidate.position,
+                confidence=best_candidate.confidence,
+                first_detected_frame=self.current_candidate.frame_index,
+                confirmed_frame=frame_index,
+                confirmation_count=self.confirmation_count,
+                timestamp=timestamp
+            )
+
+            self.confirmed_impacts.append(impact)
+            self._reset_tracking()
+
+            logger.info(f"Dart impact confirmed at {impact.position}, confidence={impact.confidence:.2f}")
+            return impact
+
+        return None
+
+    def _find_dart_shapes(
+            self,
+            frame: np.ndarray,
+            motion_mask: np.ndarray,
+            frame_index: int,
+            timestamp: float
+    ) -> List[DartCandidate]:
+        """Find dart-like objects in motion mask"""
+
+        # Find contours
+        contours, _ = cv2.findContours(
+            motion_mask,
+            cv2.RETR_EXTERNAL,
+            cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        candidates = []
+
+        for contour in contours:
+            area = cv2.contourArea(contour)
+
+            # Filter by area
+            if not (self.config.min_area <= area <= self.config.max_area):
+                continue
+
+            # Get bounding box
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # Calculate aspect ratio
+            aspect_ratio = float(w) / h if h > 0 else 0
+
+            # Filter by aspect ratio (darts are elongated)
+            if not (self.config.min_aspect_ratio <= aspect_ratio <= self.config.max_aspect_ratio):
+                continue
+
+            # Calculate center
+            M = cv2.moments(contour)
+            if M['m00'] == 0:
+                continue
+
+            cx = int(M['m10'] / M['m00'])
+            cy = int(M['m01'] / M['m00'])
+
+            # Calculate confidence based on shape quality
+            # Darts have low circularity (elongated shape)
+            perimeter = cv2.arcLength(contour, True)
+            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
+
+            # Lower circularity = higher confidence for dart
+            confidence = 1.0 - circularity
+            confidence = np.clip(confidence, 0.0, 1.0)
+
+            candidate = DartCandidate(
+                position=(cx, cy),
+                area=area,
+                confidence=confidence,
+                frame_index=frame_index,
+                timestamp=timestamp,
+                aspect_ratio=aspect_ratio
+            )
+
+            candidates.append(candidate)
+
+        # Sort by confidence (best first)
+        candidates.sort(key=lambda c: c.confidence, reverse=True)
+
+        return candidates
+
+    def _is_same_position(
+            self,
+            candidate: Optional[DartCandidate],
+            reference: Optional[DartCandidate]
+    ) -> bool:
+        """Check if two candidates are at same position"""
+        if candidate is None or reference is None:
+            return False
+
+        dx = candidate.position[0] - reference.position[0]
+        dy = candidate.position[1] - reference.position[1]
+        distance = np.sqrt(dx * dx + dy * dy)
+
+        return distance < self.config.position_tolerance_px
+
+    def _reset_tracking(self):
+        """Reset temporal tracking"""
+        self.current_candidate = None
+        self.confirmation_count = 0
+
+    def get_confirmed_impacts(self) -> List[DartImpact]:
+        """Get all confirmed dart impacts"""
+        return self.confirmed_impacts.copy()
+
+    def clear_impacts(self):
+        """Clear confirmed impacts (e.g., new game round)"""
+        self.confirmed_impacts.clear()
+        logger.info("Dart impacts cleared")
+
+
+@dataclass
+class FieldMapperConfig:
+    """Field mapper configuration"""
+    # Sector configuration (standard dartboard)
+    sector_scores: List[int] = None
+
+    # Ring radii (normalized to board radius = 1.0)
+    bull_inner_radius: float = 0.05  # 50 points
+    bull_outer_radius: float = 0.095  # 25 points
+    triple_inner_radius: float = 0.53
+    triple_outer_radius: float = 0.58
+    double_inner_radius: float = 0.94
+    double_outer_radius: float = 1.00
+
+    def __post_init__(self):
+        if self.sector_scores is None:
+            # Standard dartboard layout (clockwise from top, 20 at 12 o'clock)
+            self.sector_scores = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5]
+
+
+class FieldMapper:
+    """
+    Maps pixel coordinates to dartboard scores.
+
+    Converts (x, y) position to sector and multiplier.
+    """
+
+    def __init__(self, config: Optional[FieldMapperConfig] = None):
+        self.config = config or FieldMapperConfig()
+
+        self.sector_angle_deg = 18  # 360° / 20 sectors
+        self.sector_offset_deg = 9  # Offset to center 20 at top
+
+    def point_to_score(
+            self,
+            point: Tuple[int, int],
+            center: Tuple[int, int],
+            radius: float
+    ) -> Tuple[int, int, int]:
+        """
+        Convert pixel coordinates to dartboard score.
+
+        Args:
+            point: (x, y) position in image
+            center: (x, y) dartboard center
+            radius: Dartboard radius in pixels
+
+        Returns:
+            (score, multiplier, segment) tuple
+            - score: Base score (1-20, 25, or 50)
+            - multiplier: 1=single, 2=double, 3=triple
+            - segment: Sector index (0-19, or -1 for bull)
+        """
+        # Calculate polar coordinates
+        dx = point[0] - center[0]
+        dy = point[1] - center[1]
+        distance = np.sqrt(dx * dx + dy * dy)
+        angle_rad = np.arctan2(dy, dx)
+
+        # Normalize distance to radius
+        norm_distance = distance / radius if radius > 0 else 0
+
+        # Check bulls
+        if norm_distance <= self.config.bull_inner_radius:
+            return (50, 1, -1)  # Inner bull
+
+        if norm_distance <= self.config.bull_outer_radius:
+            return (25, 1, -1)  # Outer bull
+
+        # Outside board
+        if norm_distance > self.config.double_outer_radius:
+            return (0, 0, -1)
+
+        # Determine sector
+        angle_deg = np.degrees(angle_rad)
+        adjusted_angle = (angle_deg + 90 + self.sector_offset_deg) % 360
+        sector_index = int(adjusted_angle / self.sector_angle_deg) % 20
+        base_score = self.config.sector_scores[sector_index]
+
+        # Determine multiplier from ring
+        if self.config.triple_inner_radius <= norm_distance <= self.config.triple_outer_radius:
+            multiplier = 3
+        elif self.config.double_inner_radius <= norm_distance <= self.config.double_outer_radius:
+            multiplier = 2
+        else:
+            multiplier = 1
+
+        return (base_score, multiplier, sector_index)
