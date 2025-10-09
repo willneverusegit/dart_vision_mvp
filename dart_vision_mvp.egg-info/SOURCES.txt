@@ -4,4 +4,6 @@ dart_vision_mvp.egg-info/SOURCES.txt
 dart_vision_mvp.egg-info/dependency_links.txt
 dart_vision_mvp.egg-info/requires.txt
 dart_vision_mvp.egg-info/top_level.txt
+tests/test_integrated_pipeline.py
+tests/test_roi_calibration.py
 tests/test_video_analysis.py
