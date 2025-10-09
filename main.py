@@ -13,6 +13,7 @@ import argparse
 import logging
 import time
 import sys
+import numpy as np
 from pathlib import Path
 from typing import Optional
 
@@ -24,16 +25,33 @@ from src.vision import (
     FieldMapper, FieldMapperConfig
 )
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('dart_vision.log'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
 
+def setup_logging():
+    """Setup logging with UTF-8 encoding (no emoji issues on Windows)"""
+    # File handler with UTF-8 encoding
+    file_handler = logging.FileHandler('dart_vision.log', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    ))
+
+    # Console handler (safe for Windows console)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(
+        '%(levelname)s - %(message)s'
+    ))
+
+    # Setup root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers.clear()
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+
+# Initialize logging
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -67,10 +85,13 @@ class DartVisionApp:
         self.session_start = time.time()
         self.total_darts_detected = 0
 
+        # Cleanup guard
+        self._cleaned_up = False
+
     def setup(self) -> bool:
         """Initialize all components"""
         logger.info("=" * 60)
-        logger.info("🎯 DART VISION MVP - Initializing")
+        logger.info("DART VISION MVP - Initializing")
         logger.info("=" * 60)
 
         # 1. Calibration Manager
@@ -78,19 +99,31 @@ class DartVisionApp:
         self.calib_manager = CalibrationManager()
 
         if not self.calib_manager.is_valid():
-            logger.warning("⚠️  No valid calibration found!")
+            logger.warning("WARNING: No valid calibration found!")
 
             if self.args.calibrate:
                 logger.info("Starting calibration mode...")
-                return self._run_calibration_mode()
+
+                # Run calibration first
+                if not self._run_calibration_mode():
+                    logger.error("Calibration failed")
+                    return False
+
+                # Reload calibration after successful calibration
+                self.calib_manager = CalibrationManager()
+
+                if not self.calib_manager.is_valid():
+                    logger.error("Calibration data not loaded after calibration")
+                    return False
             else:
                 logger.warning("Running with identity transform (reduced accuracy)")
                 logger.info("Tip: Run with --calibrate flag to calibrate first")
         else:
             calib_data = self.calib_manager.get_calibration()
-            logger.info(f"✅ Calibration loaded: {calib_data.calibration_method}")
+            logger.info(f"Calibration loaded: {calib_data.calibration_method}")
             logger.info(f"   Center: {calib_data.center_px}")
             logger.info(f"   Scale: {calib_data.mm_per_px:.3f} mm/px")
+            logger.info(f"   ROI Board Radius: {calib_data.roi_board_radius:.1f}px")
 
         # 2. ROI Processor
         logger.info("Setting up ROI processor...")
@@ -115,7 +148,7 @@ class DartVisionApp:
         logger.info("Initializing dart detector...")
         self.dart_detector = DartImpactDetector(DartDetectorConfig(
             confirmation_frames=self.args.confirmation_frames,
-            position_tolerance_px=20,
+            position_tolerance_px=10,  # Reduced from 20 to minimize false positives
             min_area=10,
             max_area=1000
         ))
@@ -148,12 +181,12 @@ class DartVisionApp:
         self.camera = ThreadedCamera(camera_config)
 
         if not self.camera.start():
-            logger.error("❌ Failed to start camera")
+            logger.error("Failed to start camera")
             return False
 
-        logger.info("✅ All components initialized")
+        logger.info("All components initialized")
         logger.info("")
-        logger.info("🎮 Controls:")
+        logger.info("Controls:")
         logger.info("   'q' - Quit")
         logger.info("   'p' - Pause/Resume")
         logger.info("   'd' - Toggle debug overlay")
@@ -168,7 +201,7 @@ class DartVisionApp:
     def _run_calibration_mode(self) -> bool:
         """Interactive calibration mode"""
         logger.info("")
-        logger.info("📐 CALIBRATION MODE")
+        logger.info("CALIBRATION MODE")
         logger.info("=" * 60)
         logger.info("Instructions:")
         logger.info("1. Position dartboard clearly in view")
@@ -182,9 +215,17 @@ class DartVisionApp:
         logger.info("5. Press 'q' to cancel")
         logger.info("")
 
+        # Determine camera source
+        if self.args.video:
+            camera_src = self.args.video
+            logger.info(f"Using video file: {camera_src}")
+        else:
+            camera_src = self.args.webcam
+            logger.info(f"Using webcam: {camera_src}")
+
         # Temporary camera for calibration
         temp_camera = ThreadedCamera(CameraConfig(
-            src=self.args.webcam if not self.args.video else self.args.video,
+            src=camera_src,
             max_queue_size=2
         ))
 
@@ -263,11 +304,36 @@ class DartVisionApp:
                 cv2.destroyAllWindows()
 
                 if success:
-                    logger.info("✅ Calibration successful!")
-                    return True
+                    logger.info("Calibration successful!")
+
+                    # Test ROI warping
+                    roi_processor = ROIProcessor(ROIConfig(roi_size=(400, 400)))
+                    homography = self.calib_manager.get_homography()
+                    roi_processor.set_homography_from_matrix(homography)
+
+                    warped = roi_processor.warp_roi(calib_frame)
+
+                    # Draw calibration rings for verification
+                    calib_data = self.calib_manager.get_calibration()
+                    roi_center = (200, 200)
+                    roi_radius = int(calib_data.roi_board_radius)
+
+                    # Draw board outline and rings
+                    cv2.circle(warped, roi_center, roi_radius, (0, 255, 0), 2)
+                    cv2.circle(warped, roi_center, int(roi_radius * 0.05), (255, 255, 0), 1)
+                    cv2.circle(warped, roi_center, int(roi_radius * 0.095), (255, 255, 0), 1)
+                    cv2.circle(warped, roi_center, int(roi_radius * 0.53), (0, 255, 0), 1)
+                    cv2.circle(warped, roi_center, int(roi_radius * 0.58), (0, 255, 0), 1)
+                    cv2.circle(warped, roi_center, int(roi_radius * 0.94), (0, 0, 255), 1)
+
+                    cv2.imshow('Warped ROI - Press any key', warped)
+                    logger.info("Showing warped ROI with rings - Press any key to continue...")
+                    cv2.waitKey(0)
+                    cv2.destroyAllWindows()
                 else:
-                    logger.error("❌ Calibration failed")
-                    return False
+                    logger.error("Calibration failed")
+
+                return success
 
         cv2.destroyAllWindows()
         return False
@@ -307,9 +373,9 @@ class DartVisionApp:
                 if self.calib_manager.is_valid():
                     calib = self.calib_manager.get_calibration()
 
-                    # Use calibrated ROI center and radius
-                    roi_center = (200, 200)  # Always center of 400x400 ROI
-                    roi_radius = calib.roi_board_radius  # ✅ From calibration
+                    # ROI scoring coordinates
+                    roi_center = (200, 200)  # Center of 400x400 ROI
+                    roi_radius = calib.roi_board_radius  # From calibration
 
                     score, multiplier, segment = self.field_mapper.point_to_score(
                         dart_impact.position,
@@ -319,13 +385,13 @@ class DartVisionApp:
 
                     total_score = score * multiplier
 
-                    logger.info(f"🎯 DART #{self.total_darts_detected}")
+                    logger.info(f"DART #{self.total_darts_detected}")
                     logger.info(f"   Score: {total_score} ({multiplier}x{score})")
                     logger.info(f"   Segment: {segment}")
                     logger.info(f"   Position (ROI): {dart_impact.position}")
                     logger.info(f"   Confidence: {dart_impact.confidence:.2f}")
 
-            return roi_frame, motion_detected, fg_mask, dart_impact
+        return roi_frame, motion_detected, fg_mask, dart_impact
 
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, dart_impact):
         """Create visualization overlay"""
@@ -339,6 +405,22 @@ class DartVisionApp:
             fg_mask_color = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
             fg_mask_color = cv2.resize(fg_mask_color, (400, 400))
             display_roi = cv2.addWeighted(display_roi, 0.7, fg_mask_color, 0.3, 0)
+
+        # Draw dartboard rings for reference
+        if self.calib_manager.is_valid() and self.show_debug:
+            calib = self.calib_manager.get_calibration()
+            roi_center = (200, 200)
+            roi_radius = int(calib.roi_board_radius)
+
+            # Draw board outline
+            cv2.circle(display_roi, roi_center, roi_radius, (0, 255, 0), 2)
+
+            # Draw ring boundaries
+            cv2.circle(display_roi, roi_center, int(roi_radius * 0.05), (255, 255, 0), 1)  # Bull
+            cv2.circle(display_roi, roi_center, int(roi_radius * 0.095), (255, 255, 0), 1)  # Outer bull
+            cv2.circle(display_roi, roi_center, int(roi_radius * 0.53), (0, 255, 0), 1)  # Triple inner
+            cv2.circle(display_roi, roi_center, int(roi_radius * 0.58), (0, 255, 0), 1)  # Triple outer
+            cv2.circle(display_roi, roi_center, int(roi_radius * 0.94), (0, 0, 255), 1)  # Double inner
 
         # Draw confirmed dart impacts
         for impact in self.dart_detector.get_confirmed_impacts():
@@ -392,7 +474,7 @@ class DartVisionApp:
             return
 
         self.running = True
-        logger.info("🚀 Starting main loop...")
+        logger.info("Starting main loop...")
 
         try:
             while self.running:
@@ -465,6 +547,7 @@ class DartVisionApp:
 
                     # Restart in calibration mode
                     self.args.calibrate = True
+                    self.__init__(self.args)
                     self.run()
                     return
 
@@ -476,6 +559,11 @@ class DartVisionApp:
 
     def cleanup(self):
         """Cleanup resources"""
+        # Guard against multiple calls
+        if self._cleaned_up:
+            return
+
+        self._cleaned_up = True
         logger.info("Cleaning up...")
 
         if self.camera:
@@ -486,7 +574,7 @@ class DartVisionApp:
         # Print final statistics
         self._print_final_stats()
 
-        logger.info("✅ Shutdown complete")
+        logger.info("Shutdown complete")
 
     def _print_final_stats(self):
         """Print session statistics"""
@@ -495,13 +583,13 @@ class DartVisionApp:
 
         logger.info("")
         logger.info("=" * 60)
-        logger.info("📊 SESSION STATISTICS")
+        logger.info("SESSION STATISTICS")
         logger.info("=" * 60)
 
         # Performance
         if self.fps_counter:
             fps_stats = self.fps_counter.get_stats()
-            logger.info(f"\n⚡ Performance:")
+            logger.info(f"\nPerformance:")
             logger.info(f"   Median FPS:     {fps_stats.fps_median:.1f}")
             logger.info(f"   P95 FPS:        {fps_stats.fps_p95:.1f}")
             logger.info(f"   Mean FPS:       {fps_stats.fps_mean:.1f}")
@@ -511,7 +599,7 @@ class DartVisionApp:
         # Motion
         if self.motion_detector:
             motion_stats = self.motion_detector.get_stats()
-            logger.info(f"\n🔍 Motion Detection:")
+            logger.info(f"\nMotion Detection:")
             logger.info(f"   Frames Processed: {motion_stats['frames_processed']}")
             logger.info(f"   Motion Frames:    {motion_stats['motion_frames']}")
             logger.info(f"   Motion Rate:      {motion_stats['motion_rate']:.1%}")
@@ -519,14 +607,14 @@ class DartVisionApp:
             logger.info(f"   Gate Efficiency:  {motion_stats['gate_efficiency']:.1%}")
 
         # Darts
-        logger.info(f"\n🎯 Dart Detection:")
+        logger.info(f"\nDart Detection:")
         logger.info(f"   Total Darts:   {self.total_darts_detected}")
         logger.info(f"   Darts/Minute:  {self.total_darts_detected / (session_duration / 60):.1f}")
 
         # ROI
         if self.roi_processor:
             roi_stats = self.roi_processor.get_stats()
-            logger.info(f"\n📐 ROI Processing:")
+            logger.info(f"\nROI Processing:")
             logger.info(f"   Transforms:    {roi_stats['transforms_applied']}")
             logger.info(f"   Fallbacks:     {roi_stats['fallback_count']}")
             logger.info(f"   Fallback Rate: {roi_stats['fallback_rate']:.1%}")
@@ -534,13 +622,13 @@ class DartVisionApp:
         # Camera
         if self.camera:
             cam_stats = self.camera.get_stats()
-            logger.info(f"\n📹 Camera:")
+            logger.info(f"\nCamera:")
             logger.info(f"   Frames Captured: {cam_stats['frames_captured']}")
             logger.info(f"   Frames Dropped:  {cam_stats['frames_dropped']}")
             logger.info(f"   Drop Rate:       {cam_stats['drop_rate']:.2%}")
 
         # Session
-        logger.info(f"\n⏱️  Session:")
+        logger.info(f"\nSession:")
         logger.info(f"   Duration:     {session_duration:.1f} seconds")
         logger.info(f"   Total Frames: {self.frame_count}")
 
@@ -602,5 +690,4 @@ Examples:
 
 
 if __name__ == "__main__":
-    import numpy as np  # Add missing import
     main()
