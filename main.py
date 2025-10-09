@@ -17,6 +17,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 
+from src.utils.performance_profiler import PerformanceProfiler
 from src.capture import ThreadedCamera, CameraConfig, FPSCounter
 from src.calibration import ROIProcessor, CalibrationManager, ROIConfig
 from src.vision import (
@@ -87,6 +88,9 @@ class DartVisionApp:
 
         # Cleanup guard
         self._cleaned_up = False
+
+        # ✅ NEU: Performance profiler
+        self.profiler = PerformanceProfiler()
 
     def setup(self) -> bool:
         """Initialize all components"""
@@ -347,24 +351,19 @@ class DartVisionApp:
         # === PIPELINE STAGES ===
 
         # Stage 1: ROI Extraction (CPU reduction: ~92%)
-        roi_frame = self.roi_processor.warp_roi(frame)
+        roi_frame = self._stage_roi(frame)  # ✅ Use profiled method
 
         # Stage 2: Motion Detection (gating trigger)
-        motion_detected, motion_event, fg_mask = self.motion_detector.detect_motion(
-            roi_frame,
-            self.frame_count,
-            timestamp
-        )
+        motion_detected, motion_event, fg_mask = self._stage_motion(
+            roi_frame, self.frame_count, timestamp
+        )  # ✅ Use profiled method
 
         # Stage 3: Dart Detection (only if motion detected)
         dart_impact = None
         if motion_detected:
-            dart_impact = self.dart_detector.detect_dart(
-                roi_frame,
-                fg_mask,
-                self.frame_count,
-                timestamp
-            )
+            dart_impact = self._stage_dart(
+                roi_frame, fg_mask, self.frame_count, timestamp
+            )  # ✅ Use profiled method
 
             if dart_impact:
                 self.total_darts_detected += 1
@@ -374,8 +373,8 @@ class DartVisionApp:
                     calib = self.calib_manager.get_calibration()
 
                     # ROI scoring coordinates
-                    roi_center = (200, 200)  # Center of 400x400 ROI
-                    roi_radius = calib.roi_board_radius  # From calibration
+                    roi_center = (200, 200)
+                    roi_radius = calib.roi_board_radius
 
                     score, multiplier, segment = self.field_mapper.point_to_score(
                         dart_impact.position,
@@ -392,6 +391,30 @@ class DartVisionApp:
                     logger.info(f"   Confidence: {dart_impact.confidence:.2f}")
 
         return roi_frame, motion_detected, fg_mask, dart_impact
+
+    # ✅ NEU: Profiled stage methods
+    def _stage_roi(self, frame):
+        """ROI extraction stage (profiled)"""
+        start = time.perf_counter()
+        result = self.roi_processor.warp_roi(frame)
+        elapsed = (time.perf_counter() - start) * 1000
+        self.profiler.timings["ROI Extraction"].append(elapsed)
+        return result
+
+    def _stage_motion(self, roi_frame, frame_index, timestamp):
+        """Motion detection stage (profiled)"""
+        start = time.perf_counter()
+        result = self.motion_detector.detect_motion(roi_frame, frame_index, timestamp)
+        elapsed = (time.perf_counter() - start) * 1000
+        self.profiler.timings["Motion Detection"].append(elapsed)
+        return result
+
+    def _stage_dart(self, roi_frame, fg_mask, frame_index, timestamp):
+        """Dart detection stage (profiled)"""
+        start = time.perf_counter()
+        result = self.dart_detector.detect_dart(roi_frame, fg_mask, frame_index, timestamp)
+        elapsed = (time.perf_counter() - start) * 1000
+        self.profiler.timings["Dart Detection"].append(elapsed)
 
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, dart_impact):
         """Create visualization overlay"""
@@ -421,6 +444,19 @@ class DartVisionApp:
             cv2.circle(display_roi, roi_center, int(roi_radius * 0.53), (0, 255, 0), 1)  # Triple inner
             cv2.circle(display_roi, roi_center, int(roi_radius * 0.58), (0, 255, 0), 1)  # Triple outer
             cv2.circle(display_roi, roi_center, int(roi_radius * 0.94), (0, 0, 255), 1)  # Double inner
+        if self.calib_manager.is_valid() and len(self.dart_detector.get_confirmed_impacts()) > 0:
+            # Create heatmap overlay
+            heatmap = np.zeros((400, 400, 3), dtype=np.uint8)
+
+            for impact in self.dart_detector.get_confirmed_impacts():
+                # Draw semi-transparent circle
+                overlay = heatmap.copy()
+                cv2.circle(overlay, impact.position, 30, (0, 0, 255), -1)
+                cv2.addWeighted(heatmap, 0.7, overlay, 0.3, 0, heatmap)
+
+            # Blend heatmap with ROI
+            display_roi = cv2.addWeighted(display_roi, 0.8, heatmap, 0.2, 0)
+
 
         # Draw confirmed dart impacts
         for impact in self.dart_detector.get_confirmed_impacts():
@@ -452,7 +488,37 @@ class DartVisionApp:
             # Gate efficiency
             cv2.putText(display_roi, f"Gate: {motion_stats['gate_efficiency']:.0%}",
                        (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+            # ✅ NEW: Score history sidebar
+            if self.show_debug and self.dart_detector.get_confirmed_impacts():
+                impacts = self.dart_detector.get_confirmed_impacts()
 
+                # Calculate scores for last 10 darts
+                score_history = []
+                for impact in impacts[-10:]:
+                    if self.calib_manager.is_valid():
+                        calib = self.calib_manager.get_calibration()
+                        roi_center = (200, 200)
+                        roi_radius = calib.roi_board_radius
+
+                        score, multiplier, segment = self.field_mapper.point_to_score(
+                            impact.position,
+                            roi_center,
+                            roi_radius
+                        )
+
+                        total = score * multiplier
+                        score_history.append(total)
+
+                # Draw score history
+                y_pos = 180
+                cv2.putText(display_roi, "Recent Scores:", (10, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+                y_pos += 25
+                for i, score in enumerate(score_history[-5:], 1):
+                    cv2.putText(display_roi, f"{i}. {score}", (10, y_pos),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                    y_pos += 20
         # Combine displays
         # Create black canvas
         canvas = np.zeros((600, 1200, 3), dtype=np.uint8)
@@ -570,6 +636,10 @@ class DartVisionApp:
             self.camera.stop()
 
         cv2.destroyAllWindows()
+
+        # ✅ NEU: Print profiling report
+        if self.profiler and len(self.profiler.timings) > 0:
+            logger.info(self.profiler.get_report())
 
         # Print final statistics
         self._print_final_stats()

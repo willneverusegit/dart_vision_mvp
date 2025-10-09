@@ -50,20 +50,19 @@ class DartDetectorConfig:
     max_aspect_ratio: float = 3.0
 
     # Temporal confirmation
-    confirmation_frames: int = 3  # Frames needed to confirm
-    position_tolerance_px: int = 20  # Max pixel distance for same dart
+    confirmation_frames: int = 3
+    position_tolerance_px: int = 20
+
+    # ✅ NEW: Cooldown
+    cooldown_frames: int = 30  # Ignore region for N frames after detection
+    cooldown_radius_px: int = 50  # Radius around last detection
 
     # History
     candidate_history_size: int = 20
 
 
 class DartImpactDetector:
-    """
-    Dart impact detector with temporal confirmation.
-
-    Uses "Land-and-Stick" logic: A dart must be stable
-    for multiple frames before confirmation.
-    """
+    """Dart impact detector with temporal confirmation and cooldown."""
 
     def __init__(self, config: Optional[DartDetectorConfig] = None):
         self.config = config or DartDetectorConfig()
@@ -76,6 +75,9 @@ class DartImpactDetector:
         self.candidate_history: deque = deque(maxlen=self.config.candidate_history_size)
         self.confirmed_impacts: List[DartImpact] = []
 
+        # ✅ NEW: Cooldown tracking
+        self.cooldown_regions: List[Tuple[Tuple[int, int], int]] = []  # (position, frame_until)
+
     def detect_dart(
             self,
             frame: np.ndarray,
@@ -83,23 +85,24 @@ class DartImpactDetector:
             frame_index: int,
             timestamp: float
     ) -> Optional[DartImpact]:
-        """
-        Detect dart impact with temporal confirmation.
+        """Detect dart impact with temporal confirmation and cooldown."""
 
-        Args:
-            frame: Input frame (BGR or grayscale)
-            motion_mask: Motion foreground mask
-            frame_index: Frame number
-            timestamp: Frame timestamp
+        # ✅ Update cooldowns (remove expired)
+        self.cooldown_regions = [
+            (pos, until) for pos, until in self.cooldown_regions
+            if until > frame_index
+        ]
 
-        Returns:
-            Confirmed DartImpact if detection passes temporal test, else None
-        """
-        # Find dart-like shapes in motion mask
+        # Find dart-like shapes
         candidates = self._find_dart_shapes(frame, motion_mask, frame_index, timestamp)
 
+        # ✅ Filter candidates in cooldown regions
+        candidates = [
+            c for c in candidates
+            if not self._is_in_cooldown(c.position, frame_index)
+        ]
+
         if not candidates:
-            # No candidates, reset tracking
             self._reset_tracking()
             return None
 
@@ -109,16 +112,13 @@ class DartImpactDetector:
 
         # Check temporal stability
         if self._is_same_position(best_candidate, self.current_candidate):
-            # Same position as before, increment confirmation
             self.confirmation_count += 1
         else:
-            # New position, reset tracking
             self.current_candidate = best_candidate
             self.confirmation_count = 1
 
         # Check if confirmed
         if self.confirmation_count >= self.config.confirmation_frames:
-            # Dart confirmed!
             impact = DartImpact(
                 position=best_candidate.position,
                 confidence=best_candidate.confidence,
@@ -129,12 +129,35 @@ class DartImpactDetector:
             )
 
             self.confirmed_impacts.append(impact)
+
+            # ✅ Add cooldown region
+            cooldown_until = frame_index + self.config.cooldown_frames
+            self.cooldown_regions.append((impact.position, cooldown_until))
+
             self._reset_tracking()
 
             logger.info(f"Dart impact confirmed at {impact.position}, confidence={impact.confidence:.2f}")
             return impact
 
         return None
+
+    def _is_in_cooldown(self, position: Tuple[int, int], frame_index: int) -> bool:
+        """Check if position is in cooldown region."""
+        for cooldown_pos, cooldown_until in self.cooldown_regions:
+            if cooldown_until <= frame_index:
+                continue
+
+            # Check distance
+            dx = position[0] - cooldown_pos[0]
+            dy = position[1] - cooldown_pos[1]
+            distance = np.sqrt(dx * dx + dy * dy)
+
+            if distance < self.config.cooldown_radius_px:
+                return True
+
+        return False
+
+    # ... rest bleibt gleich
 
     def _find_dart_shapes(
             self,
