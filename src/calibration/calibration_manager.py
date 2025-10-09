@@ -37,12 +37,28 @@ class CalibrationData:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for YAML serialization"""
-        data = asdict(self)
-        # Ensure homography is list of lists
-        if isinstance(data['homography'], np.ndarray):
-            data['homography'] = data['homography'].tolist()
+        data = {
+            'center_px': list(self.center_px),  # ✅ FIX: Convert tuple to list
+            'radii_px': [float(r) for r in self.radii_px],  # Ensure all floats
+            'rotation_deg': float(self.rotation_deg),
+            'mm_per_px': float(self.mm_per_px),
+            'homography': self._homography_to_list(),
+            'last_update_utc': self.last_update_utc,
+            'valid': bool(self.valid),
+            'calibration_method': self.calibration_method
+        }
         return data
 
+    def _homography_to_list(self) -> List[List[float]]:
+        """Convert homography to nested list"""
+        if isinstance(self.homography, np.ndarray):
+            return [[float(x) for x in row] for row in self.homography]
+        elif isinstance(self.homography, list):
+            # Already list, ensure all elements are floats
+            return [[float(x) for x in row] for row in self.homography]
+        else:
+            # Fallback: identity matrix
+            return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
 
 class CalibrationManager:
     """
@@ -89,14 +105,20 @@ class CalibrationManager:
             with open(self.config_path, 'r') as f:
                 data = yaml.safe_load(f)
 
+            # Handle empty/None file
+            if data is None:
+                logger.warning("Empty calibration file, ignoring")
+                return None
+
             # Validate schema
             required_keys = ['center_px', 'homography', 'valid']
             if not all(key in data for key in required_keys):
                 logger.warning("Incomplete calibration data, ignoring")
                 return None
 
+            # Convert lists back to tuples where needed
             calib = CalibrationData(
-                center_px=tuple(data['center_px']),
+                center_px=tuple(data['center_px']),  # ✅ FIX: Convert list to tuple
                 radii_px=data.get('radii_px', [50, 100, 150, 200]),
                 rotation_deg=data.get('rotation_deg', 0.0),
                 mm_per_px=data.get('mm_per_px', 1.0),
