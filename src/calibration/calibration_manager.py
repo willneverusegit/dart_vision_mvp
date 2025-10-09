@@ -34,6 +34,7 @@ class CalibrationData:
     last_update_utc: str
     valid: bool
     calibration_method: str = "none"  # charuco, manual, template
+    roi_board_radius: float = 160.0  # ✅ NEU: Board radius in ROI space
 
     def to_dict(self) -> dict:
         """Convert to dictionary for YAML serialization"""
@@ -185,76 +186,66 @@ class CalibrationManager:
             board_points: List[Tuple[int, int]],
             board_diameter_mm: float = 340.0
     ) -> bool:
-        """
-        Manual 4-point calibration.
-
-        Args:
-            frame: Image containing dartboard
-            board_points: 4 corner points (top-left, top-right, bottom-right, bottom-left)
-            board_diameter_mm: Physical dartboard diameter (default: 340mm standard)
-
-        Returns:
-            Success flag
-        """
+        """Manual 4-point calibration."""
         if len(board_points) != 4:
             logger.error(f"Need exactly 4 points, got {len(board_points)}")
             return False
 
         try:
-            # Standard dartboard coordinates (in mm, centered at origin)
-            half_size = board_diameter_mm / 2
+            roi_size = 400
             dst_points = np.float32([
-                [-half_size, -half_size],  # Top-left
-                [half_size, -half_size],  # Top-right
-                [half_size, half_size],  # Bottom-right
-                [-half_size, half_size]  # Bottom-left
+                [0, 0],
+                [roi_size, 0],
+                [roi_size, roi_size],
+                [0, roi_size]
             ])
 
-            # Calculate homography
             homography = cv2.getPerspectiveTransform(
                 np.float32(board_points),
                 dst_points
             )
 
-            # Estimate center (average of 4 corners)
             center_x = sum(p[0] for p in board_points) / 4
             center_y = sum(p[1] for p in board_points) / 4
 
-            # Estimate scale (mm per pixel)
             board_width_px = np.linalg.norm(
                 np.array(board_points[1]) - np.array(board_points[0])
             )
             mm_per_px = board_diameter_mm / board_width_px
 
-            # Estimate standard ring radii (in pixels)
-            # Standard dartboard: double ring at 170mm, triple at 107mm, bull at 15.9mm
-            radii_mm = [15.9, 50, 107, 170]  # Bull inner, bull outer, triple, double
-            radii_px = [r / mm_per_px for r in radii_mm]
+            # ✅ Board fills ~80% of ROI after warping
+            board_radius_in_roi = roi_size * 0.4  # 400 * 0.4 = 160px
 
-            # Create calibration data
+            # Ring radii in ROI space (normalized to board radius)
+            radii_mm = [15.9, 50, 107, 170]
+            radii_px = [r / board_diameter_mm * 2 * board_radius_in_roi for r in radii_mm]
+
             self.calibration = CalibrationData(
                 center_px=(int(center_x), int(center_y)),
                 radii_px=radii_px,
-                rotation_deg=0.0,  # Could be estimated from board orientation
+                rotation_deg=0.0,
                 mm_per_px=mm_per_px,
                 homography=homography.tolist(),
                 last_update_utc=datetime.utcnow().isoformat(),
                 valid=True,
-                calibration_method='manual'
+                calibration_method='manual',
+                roi_board_radius=board_radius_in_roi  # ✅ Store ROI radius
             )
 
-            # Save to disk
             success = self._atomic_save_config(self.calibration)
 
             if success:
-                logger.info(
-                    f"Manual calibration successful: center={self.calibration.center_px}, scale={mm_per_px:.3f}mm/px")
+                logger.info(f"Manual calibration successful:")
+                logger.info(f"  Center (original): {self.calibration.center_px}")
+                logger.info(f"  Scale: {mm_per_px:.3f} mm/px")
+                logger.info(f"  ROI board radius: {board_radius_in_roi:.1f}px")
 
             return success
 
         except Exception as e:
             logger.error(f"Manual calibration failed: {e}")
             return False
+
 
     def charuco_calibration(
             self,

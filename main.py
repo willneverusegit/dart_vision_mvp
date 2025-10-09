@@ -303,23 +303,29 @@ class DartVisionApp:
             if dart_impact:
                 self.total_darts_detected += 1
 
-                # Calculate score (if calibrated)
+                # Calculate score with calibrated ROI parameters
                 if self.calib_manager.is_valid():
                     calib = self.calib_manager.get_calibration()
+
+                    # Use calibrated ROI center and radius
+                    roi_center = (200, 200)  # Always center of 400x400 ROI
+                    roi_radius = calib.roi_board_radius  # ✅ From calibration
+
                     score, multiplier, segment = self.field_mapper.point_to_score(
                         dart_impact.position,
-                        (roi_frame.shape[1]//2, roi_frame.shape[0]//2),
-                        calib.radii_px[-1]  # Use outermost radius
+                        roi_center,
+                        roi_radius
                     )
 
                     total_score = score * multiplier
 
                     logger.info(f"🎯 DART #{self.total_darts_detected}")
                     logger.info(f"   Score: {total_score} ({multiplier}x{score})")
-                    logger.info(f"   Position: {dart_impact.position}")
+                    logger.info(f"   Segment: {segment}")
+                    logger.info(f"   Position (ROI): {dart_impact.position}")
                     logger.info(f"   Confidence: {dart_impact.confidence:.2f}")
 
-        return roi_frame, motion_detected, fg_mask, dart_impact
+            return roi_frame, motion_detected, fg_mask, dart_impact
 
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, dart_impact):
         """Create visualization overlay"""
