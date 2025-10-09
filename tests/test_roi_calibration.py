@@ -17,7 +17,7 @@ def test_manual_calibration():
     """Test manual 4-point calibration with test image"""
 
     # Load test video first frame
-    video_path = "test_videos/VID-20251008-WA0003.mp4"
+    video_path = 0
     cap = cv2.VideoCapture(video_path)
     ret, frame = cap.read()
     cap.release()
