@@ -85,7 +85,7 @@ class CalibrationManager:
         self.charuco_board = cv2.aruco.CharucoBoard(
             (7, 5),  # Board size
             0.04,  # Square length (meters)
-            0.02,  # Marker length (meters)
+            0.03,  # Marker length (meters)
             self.aruco_dict
         )
 
