@@ -2,12 +2,14 @@
 
 from .roi_processor import ROIProcessor, ROIConfig
 from .calibration_manager import CalibrationManager, CalibrationData
-from .charuco_calibrator import CharucoCalibrator  # ✅ NEU
+from .unified_calibrator import UnifiedCalibrator, CalibrationMethod, CalibrationResult
 
 __all__ = [
     'ROIProcessor',
     'ROIConfig',
     'CalibrationManager',
     'CalibrationData',
-    'CharucoCalibrator'  # ✅ NEU
+    'UnifiedCalibrator',
+    'CalibrationMethod',
+    'CalibrationResult'
 ]
