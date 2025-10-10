@@ -10,7 +10,7 @@ import threading
 import queue
 import time
 import logging
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Callable
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -22,9 +22,21 @@ class CameraConfig:
     src: int | str = 0  # Camera index or video file path
     max_queue_size: int = 5  # Bounded queue prevents memory growth
     buffer_size: int = 1  # Minimal internal buffer
-    width: Optional[int] = None
-    height: Optional[int] = None
+    width: Optional[int] = 1920
+    height: Optional[int] = 1080
     fps: Optional[int] = None
+
+    # NEW: charuco auto-tune
+    apply_charuco_tune: bool = False
+    on_first_frame: Optional[Callable[[int, int], None]] = None  # (width, height)
+
+    # Optional MSMF/DirectShow props (best-effort; not all cams accept them)
+    exposure: Optional[float] = None  # e.g. -6 ≈ ~1/60s on MSMF
+    gain: Optional[float] = None  # 0..?
+    focus: Optional[float] = None  # 0 manual/infinity (if supported)
+    brightness: Optional[float] = None
+    contrast: Optional[float] = None
+    sharpness: Optional[float] = None
 
 
 class ThreadedCamera:
@@ -47,6 +59,7 @@ class ThreadedCamera:
         self.running = False
         self.thread: Optional[threading.Thread] = None
         self.lock = threading.Lock()
+        self._first_frame_called = False  # NEW
 
         # Statistics
         self.frames_captured = 0
@@ -68,12 +81,13 @@ class ThreadedCamera:
             # Configure camera properties
             self.capture.set(cv2.CAP_PROP_BUFFERSIZE, self.config.buffer_size)
 
-            if self.config.width and self.config.height:
-                self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
-                self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+            # Resolution & FPS (some backends ignore FPS)
+            if self.config.width:  self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.config.width)
+            if self.config.height: self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.config.height)
+            if self.config.fps:    self.capture.set(cv2.CAP_PROP_FPS, self.config.fps)
 
-            if self.config.fps:
-                self.capture.set(cv2.CAP_PROP_FPS, self.config.fps)
+            # Best-effort MSMF tuning (ignored if unsupported)
+            self._apply_camera_properties()
 
             logger.info(f"Camera initialized: {self._get_camera_info()}")
             return True
@@ -81,6 +95,61 @@ class ThreadedCamera:
         except Exception as e:
             logger.error(f"Camera initialization error: {e}")
             return False
+
+    def _apply_camera_properties(self):
+        """Best-effort camera property setup for stable ChArUco detection on Windows/MSMF."""
+        cap = self.capture
+        if cap is None:
+            return
+
+        # --- Helper for safe set & readback logging ---
+        def _set(prop, value, label):
+            ok = cap.set(prop, value)
+            got = cap.get(prop)
+            logger.info(f"[CAM] set {label}={value} -> ok={ok}, readback={got}")
+
+        # 1) Auto-Exposure → Manual (MSMF uses 0.25 for manual, 0.75 for auto)
+        try:
+            _set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25, "AUTO_EXPOSURE(manual)")
+        except Exception:
+            logger.debug("[CAM] AUTO_EXPOSURE property not supported")
+
+        # 2) Exposure (use provided or default -7)
+        exposure = self.config.exposure if self.config.exposure is not None else -7
+        _set(cv2.CAP_PROP_EXPOSURE, float(exposure), "EXPOSURE")
+
+        # 3) Gain (provided or default 0)
+        gain = self.config.gain if self.config.gain is not None else 0
+        _set(cv2.CAP_PROP_GAIN, float(gain), "GAIN")
+
+        # 4) Brightness / Contrast (provided or defaults)
+        brightness = self.config.brightness if self.config.brightness is not None else 100
+        contrast = self.config.contrast if self.config.contrast is not None else 40
+        _set(cv2.CAP_PROP_BRIGHTNESS, float(brightness), "BRIGHTNESS")
+        _set(cv2.CAP_PROP_CONTRAST, float(contrast), "CONTRAST")
+
+        # 5) Sharpness (provided or default 50 — deine Version hatte 4, das ist oft sehr weich)
+        sharpness = self.config.sharpness if self.config.sharpness is not None else 50
+        try:
+            _set(cv2.CAP_PROP_SHARPNESS, float(sharpness), "SHARPNESS")
+        except Exception:
+            logger.debug("[CAM] SHARPNESS property not supported")
+
+        # 6) Focus (disable autofocus if supported, then set absolute focus)
+        try:
+            cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # disable AF if possible
+            logger.info("[CAM] set AUTOFOCUS=0 (manual)")
+        except Exception:
+            logger.debug("[CAM] AUTOFOCUS property not supported")
+
+        if self.config.focus is not None:
+            _set(cv2.CAP_PROP_FOCUS, float(self.config.focus), "FOCUS")
+        else:
+            # Default: infinity / far focus if supported (0 or max depends on driver)
+            try:
+                _set(cv2.CAP_PROP_FOCUS, 0.0, "FOCUS(default=0)")
+            except Exception:
+                logger.debug("[CAM] FOCUS property not supported")
 
     def _get_camera_info(self) -> dict:
         """Get current camera properties"""
@@ -135,6 +204,21 @@ class ThreadedCamera:
                 # Reset failure counter on success
                 consecutive_failures = 0
                 self.frames_captured += 1
+
+                # --- NEW: call on_first_frame once with actual resolution ---
+                if (not self._first_frame_called
+                        and self.config.apply_charuco_tune
+                        and self.config.on_first_frame is not None):
+                    try:
+                        h, w = frame.shape[:2]
+                        self.config.on_first_frame(w,
+                                                   h)  # e.g. cal.set_detector_params(cal.tune_params_for_resolution(w,h))
+                        self._first_frame_called = True
+                        logger.info(f"[TUNE] on_first_frame invoked with {w}x{h}")
+                    except Exception as e:
+                        logger.warning(f"[TUNE] on_first_frame failed: {e}")
+                        self._first_frame_called = True  # avoid repeated attempts
+                # --- END NEW ---
 
                 # Graceful frame dropping if queue full
                 if self.frame_queue.full():
