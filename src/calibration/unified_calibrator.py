@@ -59,19 +59,22 @@ class UnifiedCalibrator:
         min_charuco_samples: int = 8,
         board_diameter_mm: float = 340.0
     ):
-        self.squares_x = squares_x
-        self.squares_y = squares_y
-        self.square_length = square_length_m
-        self.marker_length = marker_length_m
-        self.min_charuco_samples = min_charuco_samples
-        self.board_diameter_mm = board_diameter_mm
+        # --- store ctor params first ---
+        self.squares_x = int(squares_x)
+        self.squares_y = int(squares_y)
+        self.square_length_m = float(square_length_m)
+        self.marker_length_m = float(marker_length_m)
+        self.dict_type = int(dict_type)
+        self.min_charuco_samples = int(min_charuco_samples)
+        self.board_diameter_mm = float(board_diameter_mm)
 
         # --- Dictionary ---
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_type)
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(self.dict_type)
 
         # --- Charuco board (compatibility bridge) ---
+        # expects you have a helper; else use cv2.aruco.CharucoBoard((sx,sy), sq, mk, dict)
         self.board = self._make_charuco_board(
-            self.squares_x, self.squares_y, self.square_length, self.marker_length, self.aruco_dict
+            self.squares_x, self.squares_y, self.square_length_m, self.marker_length_m, self.aruco_dict
         )
 
         # --- Detector parameters (tuned for webcams, indoor light) ---
@@ -83,17 +86,110 @@ class UnifiedCalibrator:
         self._charuco = cv2.aruco.CharucoDetector(self.board) if hasattr(cv2.aruco, "CharucoDetector") else None
 
         # --- Calibration buffers/state for ChArUco ---
-        self._samples_corners: List[np.ndarray] = []
-        self._samples_ids: List[np.ndarray] = []
-        self._image_size: Optional[Tuple[int, int]] = None
-        self.K: Optional[np.ndarray] = None
-        self.D: Optional[np.ndarray] = None
-        self._rms: float = 0.0
+        self._all_charuco_corners = []  # List[np.ndarray]
+        self._all_charuco_ids     = []  # List[np.ndarray]
+        self._all_image_sizes     = []  # List[Tuple[int,int]]
+
+        # results
+        self.K = None        # camera matrix
+        self.D = None        # distortion coeffs
+        self._rms = None     # last RMS reprojection error
+        self.last_image_size = None
 
         logger.info(
-            f"UnifiedCalibrator ready | Board {squares_x}x{squares_y}, sq={square_length_m*1000:.0f}mm, "
-            f"mk={marker_length_m*1000:.0f}mm | API new={self._has_new}"
+            f"UnifiedCalibrator ready | Board {self.squares_x}x{self.squares_y}, "
+            f"sq={self.square_length_m*1000:.0f}mm, mk={self.marker_length_m*1000:.0f}mm | API new={self._has_new}"
         )
+
+    def selftest(self, log_prefix: str = "[SelfTest] ") -> dict:
+        """
+        Quick diagnostic to verify dictionary, board, and detectors work together.
+        Renders a synthetic Charuco image, then runs ArUco + Charuco detection.
+        Returns a result dict and logs key findings.
+        """
+        import numpy as np
+        import cv2
+
+        res = {
+            "ok": False,
+            "dict_type": int(self.dict_type),
+            "api_new": bool(self._has_new),
+            "board_shape": (self.squares_x, self.squares_y),
+            "square_length_m": float(self.square_length_m),
+            "marker_length_m": float(self.marker_length_m),
+            "detectors": {
+                "ArucoDetector": bool(self._aruco is not None),
+                "CharucoDetector": bool(self._charuco is not None),
+            },
+            "render": {"size_px": (800, 600)},
+            "detect": {"markers": 0, "charuco": 0},
+            "messages": [],
+        }
+
+        # --- Sanity of parameters ---
+        if self.squares_x < 3 or self.squares_y < 3:
+            res["messages"].append("Board too small (<3x3).")
+        if self.marker_length_m >= self.square_length_m:
+            res["messages"].append("marker_length_m must be < square_length_m.")
+
+        # --- Try render synthetic board ---
+        try:
+            W, H = res["render"]["size_px"]
+            # CharucoBoard.generateImage exists in 4.x
+            canvas = self.board.generateImage((W, H), marginSize=20, borderBits=1)
+            if canvas is None or canvas.size == 0:
+                raise RuntimeError("generateImage returned empty.")
+            img = cv2.cvtColor(canvas, cv2.COLOR_GRAY2BGR)
+        except Exception as e:
+            res["messages"].append(f"Render failed: {e}")
+            # Try very small fallback: white image (will fail detection but runs codepath)
+            img = np.full((H, W, 3), 255, np.uint8)
+
+        # --- Run detection on synthetic image ---
+        try:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            # ArUco marker detection
+            if self._aruco is not None:
+                mk_c, mk_ids, _ = self._aruco.detectMarkers(gray)
+            else:
+                mk_c, mk_ids, _ = cv2.aruco.detectMarkers(gray, self.aruco_dict, parameters=self.det_params)
+            res["detect"]["markers"] = 0 if mk_ids is None else int(len(mk_ids))
+
+            # Charuco interpolation / detection
+            ch_c, ch_ids = None, None
+            try:
+                if self._charuco is not None:
+                    # new API prefers keyword args
+                    out = self._charuco.detectBoard(gray, markerCorners=mk_c, markerIds=mk_ids)
+                    if isinstance(out, tuple):
+                        if len(out) == 3:
+                            _, ch_c, ch_ids = out
+                        elif len(out) == 2:
+                            ch_c, ch_ids = out
+                else:
+                    ok, ch_c, ch_ids = cv2.aruco.interpolateCornersCharuco(
+                        markerCorners=mk_c, markerIds=mk_ids, image=gray, board=self.board
+                    )
+                    if not ok:
+                        ch_c, ch_ids = None, None
+            except Exception as e:
+                res["messages"].append(f"Charuco detect failed: {e}")
+
+            res["detect"]["charuco"] = 0 if ch_ids is None else int(len(ch_ids))
+
+            # Pass/fail
+            res["ok"] = res["detect"]["markers"] > 0 and res["detect"]["charuco"] > 0
+            if res["ok"]:
+                logger.info(
+                    f"{log_prefix}OK | markers={res['detect']['markers']} charuco={res['detect']['charuco']} | dict={self.dict_type}, newAPI={self._has_new}")
+            else:
+                logger.warning(
+                    f"{log_prefix}FAILED | markers={res['detect']['markers']} charuco={res['detect']['charuco']} | messages={res['messages']}")
+        except Exception as e:
+            res["messages"].append(f"Detection pipeline error: {e}")
+            logger.error(f"{log_prefix}ERROR: {e}")
+
+        return res
 
     # ---------- API/Board helpers ----------
     @staticmethod
@@ -244,35 +340,59 @@ class UnifiedCalibrator:
         return mk_c, mk_ids, ch_c, ch_ids
 
     # ---------- ChArUco sampling/calibration ----------
-    def add_charuco_sample(self, frame) -> bool:
-        """Collect one valid ChArUco sample for later calibration."""
-        mk_c, mk_ids, ch_c, ch_ids = self.detect_charuco(frame)
-        if ch_ids is None or len(ch_ids) < 4:
-            return False
-        if self._image_size is None:
-            self._image_size = (frame.shape[1], frame.shape[0])
-        self._samples_corners.append(ch_c)
-        self._samples_ids.append(ch_ids)
-        logger.info(f"[Charuco] Sample #{len(self._samples_corners)} collected ({len(ch_ids)} corners)")
-        return True
+    def add_charuco_sample(self, gray, marker_corners, marker_ids, charuco_corners, charuco_ids):
+        """
+        Store a detected Charuco sample. Requires >= 8 Charuco corners for stability.
+        """
+        if charuco_corners is None or charuco_ids is None or len(charuco_ids) < 8:
+            raise ValueError("Not enough Charuco corners (need >=8).")
+        H, W = gray.shape[:2]
+        # Copy to avoid later mutation
+        self._all_charuco_corners.append(np.ascontiguousarray(charuco_corners).astype(np.float32))
+        self._all_charuco_ids.append(np.ascontiguousarray(charuco_ids).astype(np.int32))
+        self._all_image_sizes.append((W, H))
 
-    def calibrate_charuco(self) -> float:
-        """Run full ChArUco calibration from collected samples. Returns RMS."""
-        if len(self._samples_corners) < self.min_charuco_samples:
-            raise RuntimeError(f"Need >={self.min_charuco_samples} ChArUco samples, have {len(self._samples_corners)}.")
-        flags = (cv2.CALIB_RATIONAL_MODEL | cv2.CALIB_CB_FAST_CHECK)
-        rms, K, D, _, _ = cv2.aruco.calibrateCameraCharuco(
-            charucoCorners=self._samples_corners,
-            charucoIds=self._samples_ids,
-            board=self.board,
-            imageSize=self._image_size,
-            cameraMatrix=None,
-            distCoeffs=None,
-            flags=flags
-        )
-        self.K, self.D, self._rms = K, D, float(rms)
-        logger.info(f"[Charuco] Calibration done | RMS={self._rms:.4f}")
-        return self._rms
+    def calibrate_from_samples(self) -> bool:
+        """
+        Calibrate intrinsics from accumulated Charuco samples.
+        Sets self.K, self.D, self._rms, self.last_image_size.
+        """
+        if len(self._all_charuco_corners) < 4:
+            raise RuntimeError(f"Need >=4 Charuco samples, have {len(self._all_charuco_corners)}")
+
+        image_size = self._all_image_sizes[-1]  # last observed
+        flags = 0
+        # Optional: fix aspect ratio or principal point if you need
+        try:
+            # OpenCV 4.x Extended variant returns (rms, K, D, rvecs, tvecs, stdDeviationsIntrinsics, stdDeviationsExtrinsics, perViewErrors)
+            rms, K, D, rvecs, tvecs, _, _, per_view_err = cv2.aruco.calibrateCameraCharucoExtended(
+                charucoCorners=self._all_charuco_corners,
+                charucoIds=self._all_charuco_ids,
+                board=self.board,
+                imageSize=image_size,
+                cameraMatrix=None,
+                distCoeffs=None,
+                flags=flags,
+                criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6),
+            )
+        except Exception:
+            # Fallback without std devs
+            rms, K, D, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
+                charucoCorners=self._all_charuco_corners,
+                charucoIds=self._all_charuco_ids,
+                board=self.board,
+                imageSize=image_size,
+                cameraMatrix=None,
+                distCoeffs=None,
+                flags=flags,
+                criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-6),
+            )
+
+        self.K = K.astype(np.float64)
+        self.D = D.astype(np.float64).reshape(-1, 1)
+        self._rms = float(rms)
+        self.last_image_size = image_size
+        return True
 
     def estimate_pose_charuco(self, frame):
         """Return (ok, rvec, tvec) using current charuco calibration."""
@@ -430,9 +550,9 @@ class UnifiedCalibrator:
             "board": {
                 "squares_x": self.squares_x,
                 "squares_y": self.squares_y,
-                "square_length_m": float(self.square_length),
-                "marker_length_m": float(self.marker_length),
-                "dictionary": int(self.aruco_dict),
+                "square_length_m": float(self.square_length_m),
+                "marker_length_m": float(self.marker_length_m),
+                "dictionary": int(self.dict_type),
             },
         }
         if getattr(self, "camera_matrix", None) is not None:

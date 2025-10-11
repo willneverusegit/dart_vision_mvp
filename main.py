@@ -31,6 +31,7 @@ from src.vision import (
 from src.utils.performance_profiler import PerformanceProfiler
 from src.calibration.aruco_quad_calibrator import ArucoQuadCalibrator
 from src.calibration.calib_io import save_calibration_yaml
+from src.calibration.calib_io import load_calibration_yaml
 
 
 # ---------- Logging ----------
@@ -112,6 +113,13 @@ class DartVisionApp:
         logger.info("DART VISION MVP — init (UnifiedCalibrator only)")
         logger.info("=" * 60)
 
+        if self.args.load_yaml:
+            try:
+                data = load_calibration_yaml(self.args.load_yaml)
+                self._apply_loaded_yaml(data)
+            except Exception as e:
+                self.logger.error(f"[LOAD] Failed to load YAML: {e}")
+
         # Load previous calibration if present
         cfg = load_calibration_yaml(CALIB_YAML)
         if cfg is not None:
@@ -159,6 +167,8 @@ class DartVisionApp:
 
     # ----- Calibration UI (only UnifiedCalibrator) -----
     def _calibration_ui(self) -> bool:
+
+
         aruco_rect_mm = None
         if self.args.aruco_size_mm:
             try:
@@ -216,6 +226,14 @@ class DartVisionApp:
         clicked_pts: List[Tuple[int,int]] = []
         captured_for_manual: Optional[np.ndarray] = None
 
+        def _metrics_for_hud(gray):
+            import numpy as np, cv2
+            mean = float(np.mean(gray))  # brightness 0..255
+            lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())  # focus proxy
+            edges = cv2.Canny(gray, 80, 160)
+            edge_pct = 100.0 * float(np.mean(edges > 0))
+            return mean, lap_var, edge_pct
+
         def on_mouse(event, x, y, flags, param):
             nonlocal clicked_pts
             if event == cv2.EVENT_LBUTTONDOWN and captured_for_manual is not None and len(clicked_pts) < 4:
@@ -229,50 +247,72 @@ class DartVisionApp:
             ok, frame = temp.read()
             if not ok:
                 continue
+            display = frame.copy()
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # Detection status (for display)
+            # 1) Detection (wie bisher)
             mk_c, mk_ids, ch_c, ch_ids = self.cal.detect_charuco(frame)
-            disp = frame.copy()
+            mk_n = 0 if mk_ids is None else len(mk_ids)
+            ch_n = 0 if ch_ids is None else len(ch_ids)
+
+            # 2) Optional: Marker/Corners zeichnen (wie bisher)
             if mk_ids is not None and len(mk_ids) > 0:
-                cv2.aruco.drawDetectedMarkers(disp, mk_c, mk_ids)
-            if ch_ids is not None and len(ch_ids) > 0:
-                cv2.aruco.drawDetectedCornersCharuco(disp, ch_c, ch_ids, (0,255,0))
+                cv2.aruco.drawDetectedMarkers(display, mk_c, mk_ids)
+            if ch_c is not None and len(ch_c) > 0:
+                for pt in ch_c:
+                    p = tuple(pt.astype(int).ravel())
+                    cv2.circle(display, p, 3, (0, 255, 0), -1)
 
-            # Manual markers
-            if captured_for_manual is not None:
-                for i, pt in enumerate(clicked_pts):
-                    cv2.circle(disp, pt, 6, (0,255,255), -1)
-                    cv2.putText(disp, str(i+1), (pt[0]+10, pt[1]-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,255), 2)
+            # 3) HUD-Metriken **hier** berechnen
+            b_mean, f_var, e_pct = _metrics_for_hud(gray)
 
-            # HUD
-            y=30
-            cv2.putText(disp, f"ChArUco corners: {0 if ch_ids is None else len(ch_ids)}", (10,y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (50,220,50), 2); y+=30
-            cv2.putText(disp, f"samples: {len(self.cal._samples_corners)}  (c=collect, k=calibrate, m=manual, s=save, q=quit)", (10,y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2); y+=25
+            ok_b = (135 <= b_mean <= 150)
+            ok_f = (f_var >= 800)
+            ok_e = (4.0 <= e_pct <= 15.0)
 
-            cv2.imshow("Calibration", disp)
+            hud_lines = [
+                f"Markers: {mk_n} | ChArUco: {ch_n} | Samples: {len(getattr(self.cal, '_all_charuco_corners', []))}",
+                f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–15%)",
+                "Keys: [c] collect  [k] calibrate  [m] manual-4  [a] aruco-quad  [s] save  [q] quit",
+                f"Tuned: {'ON' if self.args.charuco_tune else 'OFF'}"
+            ]
+            hud_color = (0, 255, 0) if (ok_b and ok_f and ok_e and ch_n >= 8) else (0, 200, 200)
+            y = 30
+            for line in hud_lines:
+                cv2.putText(display, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, hud_color, 2, cv2.LINE_AA)
+                y += 22
+
+            # 4) Zeigen
+            cv2.imshow("Calibration", display)
             key = cv2.waitKey(1) & 0xFF
 
             if key == ord('q'):
                 temp.stop(); cv2.destroyWindow("Calibration")
                 return self.homography is not None
 
+
             elif key == ord('c'):
-                if self.cal.add_charuco_sample(frame):
-                    logger.info("[Charuco] sample collected.")
-                else:
+                if ch_c is None or ch_ids is None or len(ch_ids) < 8:
                     logger.info("[Charuco] not enough corners; try different angle/distance.")
 
+                else:
+                    # API wie von mir vorgeschlagen: add_charuco_sample(gray, mk_c, mk_ids, ch_c, ch_ids)
+                    self.cal.add_charuco_sample(gray, mk_c, mk_ids, ch_c, ch_ids)
+                    logger.info("[Charuco] sample collected.")
+
             elif key == ord('k'):
-                # Run full charuco calibration
                 try:
-                    rms = self.cal.calibrate_charuco()
-                    logger.info(f"[Charuco] calibrated, RMS={rms:.4f}")
+                    ok = self.cal.calibrate_from_samples()
+                    if ok:
+                        logger.info(f"[Charuco] calibrated, RMS={getattr(self.cal, '_rms', -1):.4f}")
+                    else:
+                        logger.error("[Charuco] calibration returned False")
                 except Exception as e:
                     logger.error(f"[Charuco] calibration failed: {e}")
 
             elif key == ord('a') and self.aruco_quad is not None:
                 # One-shot ArUco-Quad calibration from current frame
-                ok, frame = self.temp_cam.read()
+                ok, frame = temp.read()
                 if not ok or frame is None:
                     logger.warning("[ArucoQuad] no frame")
                     continue
@@ -339,8 +379,8 @@ class DartVisionApp:
                         "board": {
                             "squares_x": self.cal.squares_x,
                             "squares_y": self.cal.squares_y,
-                            "square_length_m": float(self.cal.square_length),
-                            "marker_length_m": float(self.cal.marker_length),
+                            "square_length_m": float(self.cal.square_length_m),
+                            "marker_length_m": float(self.cal.marker_length_m),
                             "dictionary": int(self.cal.dict_type),
                         },
                         "camera": {
@@ -418,15 +458,44 @@ class DartVisionApp:
                 cv2.destroyWindow("Calibration")
                 return True
 
-
             # If calibrated intrinsics exist, also try pose each frame (informational)
             if self.cal.K is not None and self.cal.D is not None:
                 okp, rvec, tvec = self.cal.estimate_pose_charuco(frame)
                 if okp:
                     cv2.drawFrameAxes(disp, self.cal.K, self.cal.D, rvec, tvec, 0.08)
 
-        # unreachable
-
+    def _apply_loaded_yaml(self, data: dict):
+        t = (data or {}).get("type")
+        if t == "charuco":
+            cam = data.get("camera", {})
+            K = cam.get("matrix");
+            D = cam.get("dist_coeffs")
+            if K is not None:
+                self.cal.K = np.array(K, dtype=np.float64)
+            if D is not None:
+                self.cal.D = np.array(D, dtype=np.float64).reshape(-1, 1)
+            self.cal._rms = float(cam.get("rms_px", 0.0))
+            self.cal.last_image_size = tuple(cam.get("image_size", (0, 0)))
+            H = (data.get("homography") or {}).get("H")
+            if H is not None:
+                self.homography = np.array(H, dtype=np.float64)
+            self.logger.info("[LOAD] Applied ChArUco intrinsics from YAML.")
+        elif t == "aruco_quad":
+            H = (data.get("homography") or {}).get("H")
+            if H is not None:
+                self.homography = np.array(H, dtype=np.float64)
+            scale = data.get("scale") or {}
+            self.mm_per_px = scale.get("mm_per_px")
+            self.logger.info("[LOAD] Applied ArUco-Quad homography from YAML.")
+        elif t == "homography_only":
+            H = (data.get("homography") or {}).get("H")
+            if H is not None:
+                self.homography = np.array(H, dtype=np.float64)
+            metrics = data.get("metrics") or {}
+            self.mm_per_px = metrics.get("mm_per_px")
+            self.logger.info("[LOAD] Applied Homography-only from YAML.")
+        else:
+            self.logger.warning("[LOAD] Unknown or missing type in YAML.")
     def _apply_loaded_calibration(self, cfg: dict):
         self.homography = np.array(cfg["homography"], dtype=np.float32) if cfg.get("homography") is not None else None
         self.mm_per_px = float(cfg.get("mm_per_px", 1.0))
@@ -441,10 +510,8 @@ class DartVisionApp:
     def process_frame(self, frame):
         self.frame_count += 1
         timestamp = time.time() - self.session_start
-
         # ROI
         roi_frame = self.roi.warp_roi(frame)
-
         # Motion
         motion_detected, motion_event, fg_mask = self.motion.detect_motion(roi_frame, self.frame_count, timestamp)
 
@@ -498,6 +565,9 @@ class DartVisionApp:
         if not self.setup():
             logger.error("Setup failed.")
             return
+        diag = self.cal.selftest()
+        if not diag["ok"]:
+            logger.warning(f"[SelfTest] Hints: {diag['messages']}")
 
         self.running = True
         logger.info("Main loop started.")
@@ -599,6 +669,7 @@ def main():
     p.add_argument("--motion-threshold", type=int, default=50, help="MOG2 variance threshold")
     p.add_argument("--motion-pixels", type=int, default=500, help="Min motion pixels")
     p.add_argument("--confirmation-frames", type=int, default=3, help="Frames to confirm dart")
+    p.add_argument("--load-yaml", type=str, default=None, help="Load calibration YAML on startup")
 
     args = p.parse_args()
     DartVisionApp(args).run()
