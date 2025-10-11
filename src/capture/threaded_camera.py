@@ -9,6 +9,7 @@ import cv2
 import threading
 import queue
 import time
+from pathlib import Path
 import logging
 from typing import Optional, Tuple, Callable
 from dataclasses import dataclass
@@ -192,6 +193,19 @@ class ThreadedCamera:
                 if not ret:
                     consecutive_failures += 1
                     logger.warning(f"Frame read failed ({consecutive_failures}/{max_failures})")
+
+                    # --- Video-loop patch: restart video on EOF ---
+                    # Only applies if source is a file (not webcam)
+                    if isinstance(self.config.src, (str, Path)) and Path(str(self.config.src)).suffix.lower() in [
+                        ".mp4", ".avi", ".mov", ".mkv"]:
+                        pos_frames = int(self.capture.get(cv2.CAP_PROP_POS_FRAMES))
+                        total_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if total_frames > 0 and pos_frames >= total_frames - 1:
+                            logger.info("[VideoLoop] End of file reached, restarting from frame 0.")
+                            self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                            time.sleep(0.05)
+                            continue
+                    # --- end patch ---
 
                     if consecutive_failures >= max_failures:
                         logger.error("Too many consecutive failures, attempting reconnect")
