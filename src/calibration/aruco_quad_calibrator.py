@@ -210,11 +210,13 @@ class ArucoQuadCalibrator:
         return {
             "type": "aruco_quad",
             "aruco": {
-                "dictionary": int(self.aruco_dict.bytesList.shape[0]),  # informational
-                "expected_ids": used_ids if used_ids is not None else self.expected_ids,
+                "dictionary": int(self.aruco_dict.bytesList.shape[0]),  # Info
+                "expected_ids": list(used_ids) if used_ids is not None else (
+                    list(self.expected_ids) if self.expected_ids is not None else None
+                ),
             },
             "roi": {"size_px": int(self.roi_size)},
-            "homography": {"H": H} if H is not None else None,
+            "homography": {"H": (H.tolist() if isinstance(H, np.ndarray) else H) if H is not None else None},
             "scale": {
                 "mm_per_px": float(mm_per_px) if mm_per_px is not None else None,
                 "rect_width_mm": rect_size_mm[0] if rect_size_mm else None,

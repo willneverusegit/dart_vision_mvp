@@ -15,6 +15,7 @@ import sys
 import time
 import json
 import yaml
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, List
@@ -64,23 +65,12 @@ ARUCO_DICT_MAP = {
 }
 
 
-def save_calibration_yaml(path: Path, data: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        yaml.safe_dump(data, f)
-    logger.info(f"[CALIB] Saved → {path}")
-
-def load_calibration_yaml(path: Path) -> Optional[dict]:
-    if not path.exists():
-        return None
-    with open(path, "r") as f:
-        return yaml.safe_load(f)
-
 
 # ---------- Main App ----------
 class DartVisionApp:
     def __init__(self, args):
         self.args = args
+        self.logger = logger  # <— benutze den globalen logger auch als Instanz-Logger
 
         # Components
         self.camera: Optional[ThreadedCamera] = None
@@ -113,18 +103,23 @@ class DartVisionApp:
         logger.info("DART VISION MVP — init (UnifiedCalibrator only)")
         logger.info("=" * 60)
 
+        # 1) Explizit per CLI geladen?
         if self.args.load_yaml:
             try:
                 data = load_calibration_yaml(self.args.load_yaml)
-                self._apply_loaded_yaml(data)
+                self._apply_loaded_yaml(data)  # neuer Loader (typed)
             except Exception as e:
-                self.logger.error(f"[LOAD] Failed to load YAML: {e}")
+                logger.error(f"[LOAD] Failed to load YAML from {self.args.load_yaml}: {e}")
 
-        # Load previous calibration if present
-        cfg = load_calibration_yaml(CALIB_YAML)
-        if cfg is not None:
-            self._apply_loaded_calibration(cfg)
-            logger.info(f"[CALIB] Loaded {CALIB_YAML} | method={cfg.get('method')} | RMS={cfg.get('rms', 0):.4f}")
+        # 2) Legacy-Default nur laden, wenn vorhanden und kein --load-yaml gesetzt
+        elif os.path.exists(CALIB_YAML):
+            try:
+                cfg = load_calibration_yaml(CALIB_YAML)
+                if cfg:
+                    self._apply_loaded_calibration(cfg)  # verträgt beide Schemata
+                    logger.info(f"[CALIB] Loaded {CALIB_YAML}")
+            except Exception as e:
+                logger.warning(f"[CALIB] Could not load {CALIB_YAML}: {e}")
         else:
             if self.args.calibrate:
                 ok = self._calibration_ui()
@@ -496,15 +491,39 @@ class DartVisionApp:
             self.logger.info("[LOAD] Applied Homography-only from YAML.")
         else:
             self.logger.warning("[LOAD] Unknown or missing type in YAML.")
+
     def _apply_loaded_calibration(self, cfg: dict):
-        self.homography = np.array(cfg["homography"], dtype=np.float32) if cfg.get("homography") is not None else None
+        """
+        Backward/forward compatible loader:
+          - New typed schema: type: charuco | aruco_quad | homography_only
+          - Legacy flat schema: method, homography (list), mm_per_px, camera_matrix, dist_coeffs, ...
+        """
+        if not cfg:
+            return
+
+        # --- New typed schema? delegate to _apply_loaded_yaml ---
+        if "type" in cfg:
+            self._apply_loaded_yaml(cfg)
+            return
+
+        # --- Legacy schema handling ---
+        # homography can be a list or {"H": list}
+        H_node = cfg.get("homography")
+        if isinstance(H_node, dict):
+            H_list = H_node.get("H")
+        else:
+            H_list = H_node
+
+        self.homography = np.array(H_list, dtype=np.float64) if H_list is not None else None
         self.mm_per_px = float(cfg.get("mm_per_px", 1.0))
-        self.center_px = tuple(cfg.get("center_px", [0,0]))
+        self.center_px = tuple(cfg.get("center_px", [0, 0]))
         self.roi_board_radius = float(cfg.get("roi_board_radius", 160.0))
+
+        # camera intrinsics (optional in legacy)
         if cfg.get("camera_matrix") is not None:
             self.cal.K = np.array(cfg["camera_matrix"], dtype=np.float64)
         if cfg.get("dist_coeffs") is not None:
-            self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64)
+            self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
 
     # ----- Pipeline -----
     def process_frame(self, frame):
