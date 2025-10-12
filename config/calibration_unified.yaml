@@ -17,8 +17,8 @@ homography:
     - 1.0
 scale:
   mm_per_px: 0.6136184260892698
-  rect_width_mm: 455.0
-  rect_height_mm: 455.0
+  rect_width_mm: 400.0
+  rect_height_mm: 400.0
 image_size:
 - 1920
 - 1080

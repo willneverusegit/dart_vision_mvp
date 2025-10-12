@@ -1,0 +1,109 @@
+# src/calibration/calib_loader.py
+from __future__ import annotations
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Any, Dict, List
+import yaml
+
+@dataclass
+class UnifiedCalibration:
+    center_x: float
+    center_y: float
+    r_outer_double_px: float
+    rotation_deg: float = 0.0
+    clockwise: bool = True
+    homography: Optional[list[list[float]]] = None
+    raw_dict: Optional[dict] = None
+    source_path: Optional[str] = None
+    source_type: Optional[str] = None
+
+    def to_scoring_calibration(self):
+        from src.scoring.field_mapper import Calibration
+        return Calibration(cx=self.center_x, cy=self.center_y,
+                           r_outer_double_px=self.r_outer_double_px,
+                           rotation_deg=self.rotation_deg, clockwise=self.clockwise)
+
+def _load_yaml(path: str) -> Dict[str, Any]:
+    import yaml
+    return yaml.safe_load(open(path, "r", encoding="utf-8"))
+
+def _dig_homography(d: Dict[str, Any]):
+    H = d.get("homography")
+    if isinstance(H, dict) and "H" in H: return H["H"]
+    return H
+
+def from_aruco_quad_yaml(path: str) -> Optional[UnifiedCalibration]:
+    try:
+        d = _load_yaml(path)
+    except Exception:
+        return None
+    cal = d.get("calibration", d.get("calib", {}))
+    if not isinstance(cal, dict):
+        return None
+    center = cal.get("center") or {}
+    cx = center.get("x") or cal.get("cx") or d.get("center_x")
+    cy = center.get("y") or cal.get("cy") or d.get("center_y")
+    r  = cal.get("outer_double_radius_px") or cal.get("r_double_outer_px") or d.get("r_double_outer_px")
+    rot = cal.get("rotation_deg", 0.0)
+    cw  = cal.get("clockwise", True)
+    if cx is None or cy is None or r is None:
+        return None
+    H = _dig_homography(d)
+    return UnifiedCalibration(center_x=float(cx), center_y=float(cy),
+                              r_outer_double_px=float(r),
+                              rotation_deg=float(rot), clockwise=bool(cw),
+                              homography=H, raw_dict=d, source_path=path, source_type="aruco_quad")
+
+def from_unified_yaml(path: str) -> Optional[UnifiedCalibration]:
+    try:
+        d = _load_yaml(path)
+    except Exception:
+        return None
+    cal = d.get("calibration") or d.get("unified") or d
+    if not isinstance(cal, dict):
+        return None
+    cx = cal.get("center_x")
+    cy = cal.get("center_y")
+    r  = cal.get("r_double_outer_px") or cal.get("r_outer_double_px")
+    rot = cal.get("rotation_deg", 0.0)
+    cw  = cal.get("clockwise", True)
+    if cx is None or cy is None or r is None:
+        return None
+    H = _dig_homography(d) or _dig_homography(cal)
+    return UnifiedCalibration(center_x=float(cx), center_y=float(cy),
+                              r_outer_double_px=float(r),
+                              rotation_deg=float(rot), clockwise=bool(cw),
+                              homography=H, raw_dict=d, source_path=path, source_type="unified")
+
+def from_calib_yaml(path: str) -> Optional[UnifiedCalibration]:
+    try:
+        d = _load_yaml(path)
+    except Exception:
+        return None
+    cx = d.get("center_x")
+    cy = d.get("center_y")
+    r  = d.get("r_double_outer_px") or d.get("outer_double_radius_px")
+    rot = d.get("rotation_deg", 0.0)
+    cw  = d.get("clockwise", True)
+    if cx is None or cy is None or r is None:
+        return None
+    H = _dig_homography(d)
+    return UnifiedCalibration(center_x=float(cx), center_y=float(cy),
+                              r_outer_double_px=float(r),
+                              rotation_deg=float(rot), clockwise=bool(cw),
+                              homography=H, raw_dict=d, source_path=path, source_type="calib")
+
+def load(prefer: Optional[str] = None) -> Optional[UnifiedCalibration]:
+    candidates = [prefer, "out/aruco_quad.yaml", "config/calibration_unified.yaml", "config/calib.yaml"]
+    for p in filter(None, candidates):
+        if not Path(p).exists(): continue
+        for fn in (from_aruco_quad_yaml, from_unified_yaml, from_calib_yaml):
+            uc = fn(p)
+            if uc: return uc
+    cfgdir = Path("config")
+    if cfgdir.exists():
+        for p in cfgdir.glob("*.yaml"):
+            for fn in (from_aruco_quad_yaml, from_unified_yaml, from_calib_yaml):
+                uc = fn(str(p))
+                if uc: return uc
+    return None
