@@ -1,0 +1,27 @@
+type: aruco_quad
+
+aruco:
+  dictionary: 50
+  expected_ids: [0, 3, 2, 1]
+
+roi:
+  size_px: 400
+
+# Homography Full → ROI (unchanged from your file)
+homography:
+  H:
+    - [0.8239356651153603, -0.04409169234941667, -435.19947803420973]
+    - [0.0205034663339533,   0.8107783752491569,  -254.3925241270012]
+    - [-4.7693656746507945e-05, -4.1676657449141784e-05, 1.0]
+
+scale:
+  mm_per_px: 0.7708556056022644
+  rect_width_mm: 350.0
+  rect_height_mm: 350.0
+
+# NEW: Board geometry (Full-Frame coordinates)
+calibration:
+  center: { x: 368.0, y: 236.0 }     # **from config/calib.yaml**
+  outer_double_radius_px: 160.0       # **from config/calib.yaml**
+  rotation_deg: 0.0
+  clockwise: true
