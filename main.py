@@ -21,6 +21,9 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 from collections import deque
 
+# Board mapping/overlays/config
+from src.board import BoardConfig, BoardMapper, Calibration, draw_ring_circles, draw_sector_labels
+
 
 # --- Project modules (kept) ---
 from src.capture import ThreadedCamera, CameraConfig, FPSCounter
@@ -104,6 +107,10 @@ class DartVisionApp:
         self._hud_f = deque(maxlen=15)  # Focus (Laplacian Var)
         self._hud_e = deque(maxlen=15)  # Edge density %
 
+        # Mapping/Scoring
+        self.board_cfg: Optional[BoardConfig] = None
+        self.board_mapper: Optional[BoardMapper] = None
+
     def _hud_compute(self, gray: np.ndarray):
         # Helligkeit, Fokus-Proxy (Laplacian-Var), Kantenanteil in %
         b = float(np.mean(gray))
@@ -134,19 +141,15 @@ class DartVisionApp:
             cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
             y += 22
 
-    def _draw_traffic_light(self, img, b, f, e, charuco_corners=0, org=(12, 105)):
-        """Ampel für B/F/E + Gesamtstatus"""
-
+    def _draw_traffic_light(self, img, b, f, e, org=(12, 105)):
         def st_b(v): return 'G' if 130 <= v <= 160 else ('Y' if 120 <= v <= 170 else 'R')
 
         def st_f(v): return 'G' if v >= 1500 else ('Y' if v >= 800 else 'R')
 
         def st_e(v): return 'G' if 5.0 <= v <= 10.0 else ('Y' if 3.5 <= v <= 15.0 else 'R')
 
-        def st_c(n): return 'G' if n >= 25 else ('Y' if n >= 8 else 'R')
-
-        col = {'R': (36, 36, 255), 'Y': (0, 255, 255), 'G': (0, 200, 0)}  # BGR
-        states = [("B", st_b(b)), ("F", st_f(f)), ("E", st_e(e)), ("C", st_c(charuco_corners))]
+        col = {'R': (36, 36, 255), 'Y': (0, 255, 255), 'G': (0, 200, 0)}
+        states = [("B", st_b(b)), ("F", st_f(f)), ("E", st_e(e))]
         x, y = org;
         w, h, pad = 18, 18, 8
         cv2.putText(img, "Status:", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
@@ -158,7 +161,7 @@ class DartVisionApp:
             cv2.putText(img, label, (p1[0], p2[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
         st_vals = [s for _, s in states]
         s_all = 'G' if all(s == 'G' for s in st_vals) else ('R' if 'R' in st_vals else 'Y')
-        X = x + 4 * (w + pad) + 20
+        X = x + 3 * (w + pad) + 20
         cv2.putText(img, "ALL", (X, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
         cv2.rectangle(img, (X, y), (X + w, y + h), col[s_all], -1)
         cv2.rectangle(img, (X, y), (X + w, y + h), (20, 20, 20), 1)
@@ -198,6 +201,27 @@ class DartVisionApp:
         self.roi = ROIProcessor(ROIConfig(roi_size=ROI_SIZE, polar_enabled=False))
         if self.homography is not None:
             self.roi.set_homography_from_matrix(self.homography)
+
+        # Board mapping config laden
+        try:
+            with open("board.yaml", "r", encoding="utf-8") as f:
+                cfg_dict = yaml.safe_load(f) or {}
+            self.board_cfg = BoardConfig(**cfg_dict)
+            logger.info("[BOARD] board.yaml geladen.")
+        except Exception as e:
+            logger.warning(f"[BOARD] Konnte board.yaml nicht laden/validieren: {e}")
+            self.board_cfg = BoardConfig()  # Defaults
+
+        # Mapper instanzieren, wenn Homography bereits gesetzt
+        if self.homography is not None and self.board_cfg is not None:
+            calib = Calibration(
+                cx=float(ROI_CENTER[0]),
+                cy=float(ROI_CENTER[1]),
+                r_outer_double_px=float(self.roi_board_radius),
+                rotation_deg=0.0  # optionaler Feinausgleich, falls Overlay leicht rotiert
+            )
+            self.board_mapper = BoardMapper(self.board_cfg, calib)
+
 
         # Vision modules
         self.motion = MotionDetector(MotionConfig(
@@ -310,6 +334,9 @@ class DartVisionApp:
                 continue
             display = frame.copy()
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if self.args.clahe:
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                gray = clahe.apply(gray)
 
             # 1) Detection (wie bisher)
             mk_c, mk_ids, ch_c, ch_ids = self.cal.detect_charuco(frame)
@@ -324,18 +351,17 @@ class DartVisionApp:
                     p = tuple(pt.astype(int).ravel())
                     cv2.circle(display, p, 3, (0, 255, 0), -1)
 
-            # 3) HUD-Metriken (geglättet) + Ampel
+            # HUD + Ampel (geglättet)
             b_mean, f_var, e_pct = self._hud_compute(gray)
-
-            hud_lines = [
-                f"Markers: {mk_n} | ChArUco: {ch_n} | Samples: {len(getattr(self.cal, '_all_charuco_corners', []))}",
+            hud_color = self._hud_color(b_mean, f_var, e_pct)
+            y = 30
+            for line in [
                 f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–12%)",
-                "Keys: [c] collect  [k] calibrate  [m] manual-4  [a] aruco-quad  [s] save  [q] quit",
-                f"Tuned: {'ON' if self.args.charuco_tune else 'OFF'}"
-            ]
-            hud_color = self._hud_color(b_mean, f_var, e_pct, ch_n)
-            self._hud_draw(display, hud_lines, color=hud_color, org=(10, 28))
-            self._draw_traffic_light(display, b_mean, f_var, e_pct, ch_n, org=(12, 105))
+                "Keys: [m] manual-4  [a] aruco-quad  [s] save  [q] quit",
+            ]:
+                cv2.putText(display, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, hud_color, 2, cv2.LINE_AA);
+                y += 22
+            self._draw_traffic_light(display, b_mean, f_var, e_pct, org=(12, 105))
 
             # 4) Zeigen
             cv2.imshow("Calibration", display)
@@ -345,25 +371,6 @@ class DartVisionApp:
                 temp.stop(); cv2.destroyWindow("Calibration")
                 return self.homography is not None
 
-
-            elif key == ord('c'):
-                if ch_c is None or ch_ids is None or len(ch_ids) < 8:
-                    logger.info("[Charuco] not enough corners; try different angle/distance.")
-
-                else:
-                    # API wie von mir vorgeschlagen: add_charuco_sample(gray, mk_c, mk_ids, ch_c, ch_ids)
-                    self.cal.add_charuco_sample(gray, mk_c, mk_ids, ch_c, ch_ids)
-                    logger.info("[Charuco] sample collected.")
-
-            elif key == ord('k'):
-                try:
-                    ok = self.cal.calibrate_from_samples()
-                    if ok:
-                        logger.info(f"[Charuco] calibrated, RMS={getattr(self.cal, '_rms', -1):.4f}")
-                    else:
-                        logger.error("[Charuco] calibration returned False")
-                except Exception as e:
-                    logger.error(f"[Charuco] calibration failed: {e}")
 
             elif key == ord('a') and self.aruco_quad is not None:
                 # One-shot ArUco-Quad calibration from current frame
@@ -600,6 +607,11 @@ class DartVisionApp:
             impact = self.dart.detect_dart(roi_frame, fg_mask, self.frame_count, timestamp)
             if impact:
                 self.total_darts += 1
+                if impact and self.board_mapper is not None:
+                    ring, sector, label = self.board_mapper.score_from_hit(float(impact.position[0]),
+                                                                           float(impact.position[1]))
+                    impact.score_label = label
+
                 if self.show_debug:
                     logger.info(f"[DART #{self.total_darts}] pos={impact.position} conf={impact.confidence:.2f}")
 
@@ -608,6 +620,17 @@ class DartVisionApp:
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, impact):
         disp_main = cv2.resize(frame, (800, 600))
         disp_roi = cv2.resize(roi_frame, ROI_SIZE)
+
+        # HUD im Laufbetrieb (nur Anzeige)
+        gray_main = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if getattr(self.args, "clahe", False):
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray_main = clahe.apply(gray_main)
+        b_mean, f_var, e_pct = self._hud_compute(gray_main)
+        hud_col = self._hud_color(b_mean, f_var, e_pct)
+        cv2.putText(disp_main, f"B:{b_mean:.0f} F:{int(f_var)} E:{e_pct:.1f}%", (10, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_col, 2, cv2.LINE_AA)
+        self._draw_traffic_light(disp_main, b_mean, f_var, e_pct, org=(10, 50))
 
         # Motion overlay
         if self.show_motion and motion_detected:
@@ -622,10 +645,18 @@ class DartVisionApp:
             for f in (0.05, 0.095, 0.53, 0.58, 0.94):
                 cv2.circle(disp_roi, ROI_CENTER, int(r * f), (255, 255, 0), 1)
 
+        if self.board_mapper is not None:
+            disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
+            disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
+
         # Impact markers
         for imp in self.dart.get_confirmed_impacts():
             cv2.circle(disp_roi, imp.position, 12, (0, 255, 255), 2)
             cv2.circle(disp_roi, imp.position, 3, (0, 255, 255), -1)
+            if hasattr(imp, "score_label") and imp.score_label:
+                cv2.putText(disp_roi, imp.score_label, (imp.position[0] + 10, imp.position[1] - 10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+
 
         # Debug HUD
         if self.show_debug and self.fps is not None:
@@ -703,6 +734,22 @@ class DartVisionApp:
             # apply homography to ROI
             if self.homography is not None:
                 self.roi.set_homography_from_matrix(self.homography)
+
+        # Mapper aktualisieren (falls BoardConfig vorhanden)
+        if self.board_cfg is None:
+            try:
+                with open("board.yaml", "r", encoding="utf-8") as f:
+                    cfg_dict = yaml.safe_load(f) or {}
+                self.board_cfg = BoardConfig(**cfg_dict)
+            except Exception:
+                self.board_cfg = BoardConfig()
+
+        self.board_mapper = BoardMapper(
+            self.board_cfg,
+            Calibration(cx=float(ROI_CENTER[0]), cy=float(ROI_CENTER[1]),
+                        r_outer_double_px=float(self.roi_board_radius), rotation_deg=0.0)
+        )
+
         # restart camera
         cam_src = self.args.video if self.args.video else self.args.webcam
         self.camera = ThreadedCamera(CameraConfig(src=cam_src, max_queue_size=5, buffer_size=1,
@@ -749,6 +796,8 @@ def main():
     p.add_argument("--motion-pixels", type=int, default=500, help="Min motion pixels")
     p.add_argument("--confirmation-frames", type=int, default=3, help="Frames to confirm dart")
     p.add_argument("--load-yaml", type=str, default=None, help="Load calibration YAML on startup")
+    p.add_argument("--clahe", action="store_true",
+                   help="Enable CLAHE on grayscale for HUD/detection")
 
     args = p.parse_args()
     DartVisionApp(args).run()

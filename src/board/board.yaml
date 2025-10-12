@@ -1,0 +1,24 @@
+# Board geometry and mapping (normalized radii, sector order). 
+# This file is calibration-agnostic; center/radius come from calib.yaml at runtime.
+version: 1
+angles:
+  theta0_deg: 90            # 0° reference at 12 o'clock (sector 20 up). Change if your pipeline defines 0° elsewhere.
+  clockwise: true           # true if angles increase clockwise from theta0
+  tolerance_deg: 2.0        # angular tolerance for sector boundary classification
+radii:
+  # Normalized radii in [0,1] from board center, relative to the outer double ring outer edge.
+  # Monotonic increasing: r_bull_inner < r_bull_outer < r_triple_inner < r_triple_outer < r_double_inner < r_double_outer (=1.0)
+  r_bull_inner: 0.02        # inner bull (50) radius
+  r_bull_outer: 0.063       # outer bull (25) radius
+  r_triple_inner: 0.47
+  r_triple_outer: 0.53
+  r_double_inner: 0.94
+  r_double_outer: 1.0
+  radial_tolerance: 0.01    # tolerance on radii thresholds (normalized units)
+sectors:
+  # Standard dartboard order, starting at sector 20 and moving clockwise.
+  order: [20,1,18,4,13,6,10,15,2,17,3,19,7,16,8,11,14,9,12,5]
+  width_deg: 18.0           # fixed sector width
+runtime:
+  use_hough_as_fallback: true  # If calib.yaml missing, try Hough circle to estimate center/radius
+  verify_calibration: true     # Optionally verify calib center/radius against Hough (+/- 2.5%)

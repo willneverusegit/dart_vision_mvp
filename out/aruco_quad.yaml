@@ -1,7 +1,11 @@
 type: aruco_quad
 aruco:
   dictionary: 50
-  expected_ids: null
+  expected_ids:
+  - 0
+  - 3
+  - 2
+  - 1
 roi:
   size_px: 400
 homography:
@@ -17,8 +21,5 @@ homography:
     - 1.0
 scale:
   mm_per_px: 0.80544114112854
-  rect_width_mm: 400.0
-  rect_height_mm: 400.0
-image_size:
-- 1920
-- 1080
+  rect_width_mm: 455.0
+  rect_height_mm: 455.0
