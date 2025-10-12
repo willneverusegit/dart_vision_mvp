@@ -20,6 +20,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, List
 from collections import deque
+from src.game.game import DemoGame, GameMode
+
 
 # Board mapping/overlays/config
 from src.board import BoardConfig, BoardMapper, Calibration, draw_ring_circles, draw_sector_labels
@@ -59,6 +61,11 @@ logger = logging.getLogger("main")
 
 
 # ---------- Small helpers ----------
+# Overlay-Modi
+OVERLAY_MIN   = 0  # nur Treffer & Game-HUD (präsentationstauglich)
+OVERLAY_RINGS = 1  # Ringe + ROI-Kreis
+OVERLAY_FULL  = 2  # Voll: Ringe + Sektoren + technische HUDs
+
 CALIB_YAML = Path("config/calibration_unified.yaml")
 ROI_SIZE = (400, 400)
 ROI_CENTER = (ROI_SIZE[0] // 2, ROI_SIZE[1] // 2)
@@ -110,6 +117,12 @@ class DartVisionApp:
         # Mapping/Scoring
         self.board_cfg: Optional[BoardConfig] = None
         self.board_mapper: Optional[BoardMapper] = None
+        # Overlay-Mode (0=min, 1=rings, 2=full)
+        self.overlay_mode = OVERLAY_FULL
+
+        # Mini-Game
+        self.game = DemoGame(mode=self.args.game if hasattr(self.args, "game") else GameMode.ATC)
+        self.last_msg = ""  # HUD-Zeile für letzten Wurf
 
     def _hud_compute(self, gray: np.ndarray):
         # Helligkeit, Fokus-Proxy (Laplacian-Var), Kantenanteil in %
@@ -140,6 +153,24 @@ class DartVisionApp:
         for ln in lines:
             cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
             y += 22
+
+    def _points_from_mapping(self, ring: str, sector: int) -> int:
+        """Rechnet BoardMapper-Ergebnis in Punkte um."""
+        if ring == "bull_inner":
+            return 50
+        if ring == "bull_outer":
+            return 25
+        if ring == "double":
+            return 2 * int(sector)
+        if ring == "triple":
+            return 3 * int(sector)
+        if ring.startswith("single"):
+            return int(sector)
+        # Fallback
+        try:
+            return int(sector)
+        except Exception:
+            return 0
 
     def _draw_traffic_light(self, img, b, f, e, org=(12, 105)):
         def st_b(v): return 'G' if 130 <= v <= 160 else ('Y' if 120 <= v <= 170 else 'R')
@@ -218,7 +249,7 @@ class DartVisionApp:
                 cx=float(ROI_CENTER[0]),
                 cy=float(ROI_CENTER[1]),
                 r_outer_double_px=float(self.roi_board_radius),
-                rotation_deg=0.0  # optionaler Feinausgleich, falls Overlay leicht rotiert
+                rotation_deg=-9.0  # optionaler Feinausgleich, falls Overlay leicht rotiert
             )
             self.board_mapper = BoardMapper(self.board_cfg, calib)
 
@@ -247,7 +278,7 @@ class DartVisionApp:
             logger.error("Camera start failed.")
             return False
 
-        logger.info("Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate")
+        logger.info("Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode")
         return True
 
     # ----- Calibration UI (only UnifiedCalibrator) -----
@@ -608,10 +639,15 @@ class DartVisionApp:
             if impact:
                 self.total_darts += 1
                 if impact and self.board_mapper is not None:
-                    ring, sector, label = self.board_mapper.score_from_hit(float(impact.position[0]),
-                                                                           float(impact.position[1]))
-                    impact.score_label = label
-
+                    ring, sector, label = self.board_mapper.score_from_hit(
+                        float(impact.position[0]), float(impact.position[1])
+                    )
+                    pts = self._points_from_mapping(ring, sector)
+                    impact.score_label = label  # z.B. "D20", "T5", "25", "50"
+                    # Game-Update
+                    self.last_msg = self.game.apply_points(pts, label)
+                    if self.show_debug:
+                        logger.info(f"[SCORE] {label} -> {pts} | {self.last_msg}")
                 if self.show_debug:
                     logger.info(f"[DART #{self.total_darts}] pos={impact.position} conf={impact.confidence:.2f}")
 
@@ -622,15 +658,17 @@ class DartVisionApp:
         disp_roi = cv2.resize(roi_frame, ROI_SIZE)
 
         # HUD im Laufbetrieb (nur Anzeige)
-        gray_main = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if getattr(self.args, "clahe", False):
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray_main = clahe.apply(gray_main)
-        b_mean, f_var, e_pct = self._hud_compute(gray_main)
-        hud_col = self._hud_color(b_mean, f_var, e_pct)
-        cv2.putText(disp_main, f"B:{b_mean:.0f} F:{int(f_var)} E:{e_pct:.1f}%", (10, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_col, 2, cv2.LINE_AA)
-        self._draw_traffic_light(disp_main, b_mean, f_var, e_pct, org=(10, 50))
+
+        if self.overlay_mode == OVERLAY_FULL:
+            gray_main = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            if getattr(self.args, "clahe", False):
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                gray_main = clahe.apply(gray_main)
+            b_mean, f_var, e_pct = self._hud_compute(gray_main)
+            hud_col = self._hud_color(b_mean, f_var, e_pct)
+            cv2.putText(disp_main, f"B:{b_mean:.0f} F:{int(f_var)} E:{e_pct:.1f}%", (10, 24),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_col, 2, cv2.LINE_AA)
+            self._draw_traffic_light(disp_main, b_mean, f_var, e_pct, org=(10, 50))
 
         # Motion overlay
         if self.show_motion and motion_detected:
@@ -639,15 +677,19 @@ class DartVisionApp:
             disp_roi = cv2.addWeighted(disp_roi, 0.7, fg_color, 0.3, 0)
 
         # Board rings (ROI)
-        if self.homography is not None and self.show_debug:
-            r = int(self.roi_board_radius)
-            cv2.circle(disp_roi, ROI_CENTER, r, (0, 255, 0), 2)
-            for f in (0.05, 0.095, 0.53, 0.58, 0.94):
-                cv2.circle(disp_roi, ROI_CENTER, int(r * f), (255, 255, 0), 1)
+        # ROI-Overlays nach Modus
+        if self.homography is not None:
+            if self.overlay_mode >= OVERLAY_RINGS:
+                # ROI-Kreis (grün) + ein paar Referenzringe
+                r = int(self.roi_board_radius)
+                cv2.circle(disp_roi, ROI_CENTER, r, (0, 255, 0), 2)
+                for f in (0.05, 0.095, 0.53, 0.58, 0.94):
+                    cv2.circle(disp_roi, ROI_CENTER, int(r * f), (255, 255, 0), 1)
 
-        if self.board_mapper is not None:
-            disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
-            disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
+            if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
+                # präzise, aus BoardMapper abgeleitete Geometrie
+                disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
+                disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
 
         # Impact markers
         for imp in self.dart.get_confirmed_impacts():
@@ -657,6 +699,30 @@ class DartVisionApp:
                 cv2.putText(disp_roi, imp.score_label, (imp.position[0] + 10, imp.position[1] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
 
+        # Game-HUD unten links im ROI
+        y0 = ROI_SIZE[1] - 60
+        mode_txt = "ATC" if self.game.mode == GameMode.ATC else "301"
+        cv2.putText(disp_roi, f"Game: {mode_txt}", (10, y0),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        y0 += 28
+        if self.game.mode == GameMode.ATC:
+            status_txt = "FINISH" if self.game.done else f"Target: {self.game.target}"
+        else:
+            status_txt = "FINISH" if self.game.done else f"Score: {self.game.score}"
+        cv2.putText(disp_roi, status_txt, (10, y0),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
+        cv2.putText(disp_roi, f"Overlay: {modes[self.overlay_mode]}", (ROI_SIZE[0] - 180, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
+
+        # Letzter Wurf (rechts unten)
+        if self.last_msg:
+            cv2.putText(disp_roi, self.last_msg, (10, ROI_SIZE[1] - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 220), 2, cv2.LINE_AA)
+        cv2.putText(disp_roi, f"Overlay rot:{self.overlay_rot_deg:.1f}°  scale:{self.overlay_scale:.3f}",
+                    (ROI_SIZE[0] - 300, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
+        cv2.putText(disp_roi, "Keys: \u2190\u2192 rot  \u2191\u2193 scale  s save",
+                    (ROI_SIZE[0] - 300, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
 
         # Debug HUD
         if self.show_debug and self.fps is not None:
@@ -720,6 +786,22 @@ class DartVisionApp:
                 elif key == ord('c'):
                     # Recalibrate: run UI, then re-apply homography
                     self._recalibrate_and_apply()
+                elif key == ord('o'):
+                    self.overlay_mode = (self.overlay_mode + 1) % 3
+                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
+                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
+                elif key == ord('g'):
+                    # reset game
+                    self.game.reset()
+                    self.last_msg = ""
+                    logger.info(f"[GAME] Reset {self.game.mode}")
+                elif key == ord('h'):
+                    # switch mode ATC<->301
+                    new_mode = GameMode._301 if self.game.mode == GameMode.ATC else GameMode.ATC
+                    self.game.switch_mode(new_mode)
+                    self.last_msg = ""
+                    logger.info(f"[GAME] Switch to {self.game.mode}")
+
 
         except KeyboardInterrupt:
             logger.info("Interrupted.")
@@ -780,7 +862,9 @@ def main():
     p.add_argument("--charuco-tune", action="store_true",
                    help="Auto-tune Charuco/Aruco detector params during calibration UI")
 
-    # argparse setup …
+    p.add_argument("--game", type=str, choices=[GameMode.ATC, GameMode._301], default=GameMode.ATC,
+                   help="Mini-Spielmodus: 'atc' (Around the Clock) oder '301'")
+
     p.add_argument("--save-yaml", type=str, default="out/calibration.yaml",
                    help="Path to write calibration YAML (both charuco or aruco-quad)")
     p.add_argument("--aruco-quad", action="store_true",
