@@ -19,6 +19,8 @@ import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, List
+from collections import deque
+
 
 # --- Project modules (kept) ---
 from src.capture import ThreadedCamera, CameraConfig, FPSCounter
@@ -96,6 +98,70 @@ class DartVisionApp:
         self.frame_count = 0
         self.session_start = time.time()
         self.total_darts = 0
+
+        # HUD buffers (Glättung)
+        self._hud_b = deque(maxlen=15)  # Brightness
+        self._hud_f = deque(maxlen=15)  # Focus (Laplacian Var)
+        self._hud_e = deque(maxlen=15)  # Edge density %
+
+    def _hud_compute(self, gray: np.ndarray):
+        # Helligkeit, Fokus-Proxy (Laplacian-Var), Kantenanteil in %
+        b = float(np.mean(gray))
+        f = float(cv2.Laplacian(gray, cv2.CV_64F).var())
+        edges = cv2.Canny(gray, 80, 160)
+        e = 100.0 * float(np.mean(edges > 0))
+        # Glättung
+        self._hud_b.append(b);
+        self._hud_f.append(f);
+        self._hud_e.append(e)
+        b_ = float(np.mean(self._hud_b));
+        f_ = float(np.mean(self._hud_f));
+        e_ = float(np.mean(self._hud_e))
+        return b_, f_, e_
+
+    def _hud_color(self, b: float, f: float, e: float, charuco_corners: int = 0):
+        # Zielkorridore (kannst du später anpassen)
+        ok_b = 120.0 <= b <= 170.0
+        ok_f = f >= 800.0
+        ok_e = 3.5 <= e <= 15.0
+        ok_c = (charuco_corners >= 8)  # nur in Kalibrier-UI relevant
+        ok = ok_b and ok_f and ok_e and ok_c
+        return (0, 255, 0) if ok else (0, 200, 200)
+
+    def _hud_draw(self, img, lines, color=(0, 255, 0), org=(12, 24)):
+        x, y = org
+        for ln in lines:
+            cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
+            y += 22
+
+    def _draw_traffic_light(self, img, b, f, e, charuco_corners=0, org=(12, 105)):
+        """Ampel für B/F/E + Gesamtstatus"""
+
+        def st_b(v): return 'G' if 130 <= v <= 160 else ('Y' if 120 <= v <= 170 else 'R')
+
+        def st_f(v): return 'G' if v >= 1500 else ('Y' if v >= 800 else 'R')
+
+        def st_e(v): return 'G' if 5.0 <= v <= 10.0 else ('Y' if 3.5 <= v <= 15.0 else 'R')
+
+        def st_c(n): return 'G' if n >= 25 else ('Y' if n >= 8 else 'R')
+
+        col = {'R': (36, 36, 255), 'Y': (0, 255, 255), 'G': (0, 200, 0)}  # BGR
+        states = [("B", st_b(b)), ("F", st_f(f)), ("E", st_e(e)), ("C", st_c(charuco_corners))]
+        x, y = org;
+        w, h, pad = 18, 18, 8
+        cv2.putText(img, "Status:", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
+        for i, (label, st) in enumerate(states):
+            p1 = (x + i * (w + pad), y);
+            p2 = (p1[0] + w, p1[1] + h)
+            cv2.rectangle(img, p1, p2, col[st], -1);
+            cv2.rectangle(img, p1, p2, (20, 20, 20), 1)
+            cv2.putText(img, label, (p1[0], p2[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+        st_vals = [s for _, s in states]
+        s_all = 'G' if all(s == 'G' for s in st_vals) else ('R' if 'R' in st_vals else 'Y')
+        X = x + 4 * (w + pad) + 20
+        cv2.putText(img, "ALL", (X, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
+        cv2.rectangle(img, (X, y), (X + w, y + h), col[s_all], -1)
+        cv2.rectangle(img, (X, y), (X + w, y + h), (20, 20, 20), 1)
 
     # ----- Setup -----
     def setup(self) -> bool:
@@ -258,24 +324,18 @@ class DartVisionApp:
                     p = tuple(pt.astype(int).ravel())
                     cv2.circle(display, p, 3, (0, 255, 0), -1)
 
-            # 3) HUD-Metriken **hier** berechnen
-            b_mean, f_var, e_pct = _metrics_for_hud(gray)
-
-            ok_b = (135 <= b_mean <= 150)
-            ok_f = (f_var >= 800)
-            ok_e = (4.0 <= e_pct <= 15.0)
+            # 3) HUD-Metriken (geglättet) + Ampel
+            b_mean, f_var, e_pct = self._hud_compute(gray)
 
             hud_lines = [
                 f"Markers: {mk_n} | ChArUco: {ch_n} | Samples: {len(getattr(self.cal, '_all_charuco_corners', []))}",
-                f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–15%)",
+                f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–12%)",
                 "Keys: [c] collect  [k] calibrate  [m] manual-4  [a] aruco-quad  [s] save  [q] quit",
                 f"Tuned: {'ON' if self.args.charuco_tune else 'OFF'}"
             ]
-            hud_color = (0, 255, 0) if (ok_b and ok_f and ok_e and ch_n >= 8) else (0, 200, 200)
-            y = 30
-            for line in hud_lines:
-                cv2.putText(display, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, hud_color, 2, cv2.LINE_AA)
-                y += 22
+            hud_color = self._hud_color(b_mean, f_var, e_pct, ch_n)
+            self._hud_draw(display, hud_lines, color=hud_color, org=(10, 28))
+            self._draw_traffic_light(display, b_mean, f_var, e_pct, ch_n, org=(12, 105))
 
             # 4) Zeigen
             cv2.imshow("Calibration", display)
