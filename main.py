@@ -119,6 +119,9 @@ class DartVisionApp:
         self.board_mapper: Optional[BoardMapper] = None
         # Overlay-Mode (0=min, 1=rings, 2=full)
         self.overlay_mode = OVERLAY_FULL
+        # Overlay fine-tune (applied only to BoardMapper projection)
+        self.overlay_rot_deg: float = 0.0  # add to Calibration.rotation_deg
+        self.overlay_scale: float = 1.0  # multiplies roi_board_radius
 
         # Mini-Game
         self.game = DemoGame(mode=self.args.game if hasattr(self.args, "game") else GameMode.ATC)
@@ -245,14 +248,15 @@ class DartVisionApp:
 
         # Mapper instanzieren, wenn Homography bereits gesetzt
         if self.homography is not None and self.board_cfg is not None:
-            calib = Calibration(
-                cx=float(ROI_CENTER[0]),
-                cy=float(ROI_CENTER[1]),
-                r_outer_double_px=float(self.roi_board_radius),
-                rotation_deg=-9.0  # optionaler Feinausgleich, falls Overlay leicht rotiert
+            self.board_mapper = BoardMapper(
+                self.board_cfg,
+                Calibration(
+                    cx=float(ROI_CENTER[0]),
+                    cy=float(ROI_CENTER[1]),
+                    r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
+                    rotation_deg=float(0.0 + self.overlay_rot_deg),
+                ),
             )
-            self.board_mapper = BoardMapper(self.board_cfg, calib)
-
 
         # Vision modules
         self.motion = MotionDetector(MotionConfig(
@@ -493,6 +497,7 @@ class DartVisionApp:
                             "roi_board_radius": float(self.roi_board_radius) if getattr(self, "roi_board_radius",
                                                                                         None) is not None else None,
                         },
+
                     }
                     save_calibration_yaml(CALIB_YAML, data)
                     logger.info(f"[SAVE] ChArUco YAML → {CALIB_YAML}")
@@ -622,6 +627,11 @@ class DartVisionApp:
             self.cal.K = np.array(cfg["camera_matrix"], dtype=np.float64)
         if cfg.get("dist_coeffs") is not None:
             self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
+        ov = (cfg or {}).get("overlay_adjust") or {}
+        if "rotation_deg" in ov:
+            self.overlay_rot_deg = float(ov["rotation_deg"])
+        if "scale" in ov:
+            self.overlay_scale = float(ov["scale"])
 
     # ----- Pipeline -----
     def process_frame(self, frame):
@@ -791,16 +801,52 @@ class DartVisionApp:
                     modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
                     logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
                 elif key == ord('g'):
-                    # reset game
                     self.game.reset()
                     self.last_msg = ""
                     logger.info(f"[GAME] Reset {self.game.mode}")
                 elif key == ord('h'):
-                    # switch mode ATC<->301
                     new_mode = GameMode._301 if self.game.mode == GameMode.ATC else GameMode.ATC
                     self.game.switch_mode(new_mode)
                     self.last_msg = ""
                     logger.info(f"[GAME] Switch to {self.game.mode}")
+                elif key == ord('o'):
+                    self.overlay_mode = (self.overlay_mode + 1) % 3
+                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
+                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
+
+                # ---- Overlay fine-tune live ----
+                elif key == 81:  # ←
+                    self.overlay_rot_deg -= 0.5
+                    if self.board_mapper:
+                        self.board_mapper.calib.rotation_deg = self.overlay_rot_deg
+                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
+                elif key == 83:  # →
+                    self.overlay_rot_deg += 0.5
+                    if self.board_mapper:
+                        self.board_mapper.calib.rotation_deg = self.overlay_rot_deg
+                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
+                elif key == 82:  # ↑
+                    self.overlay_scale *= 1.01  # +1%
+                    if self.board_mapper:
+                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * self.overlay_scale
+                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
+                elif key == 84:  # ↓
+                    self.overlay_scale /= 1.01  # -1%
+                    if self.board_mapper:
+                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * self.overlay_scale
+                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
+                elif key == ord('S') or key == ord('s'):  # speichern
+                    # lade aktuelles YAML (falls vorhanden), sonst neues Dict
+                    try:
+                        cfg = load_calibration_yaml(CALIB_YAML) or {}
+                    except Exception:
+                        cfg = {}
+                    cfg.setdefault("overlay_adjust", {})
+                    cfg["overlay_adjust"]["rotation_deg"] = float(self.overlay_rot_deg)
+                    cfg["overlay_adjust"]["scale"] = float(self.overlay_scale)
+                    save_calibration_yaml(CALIB_YAML, cfg)
+                    logger.info(
+                        f"[OVERLAY] saved offsets to {CALIB_YAML} (rot={self.overlay_rot_deg:.2f}, scale={self.overlay_scale:.4f})")
 
 
         except KeyboardInterrupt:
@@ -828,8 +874,12 @@ class DartVisionApp:
 
         self.board_mapper = BoardMapper(
             self.board_cfg,
-            Calibration(cx=float(ROI_CENTER[0]), cy=float(ROI_CENTER[1]),
-                        r_outer_double_px=float(self.roi_board_radius), rotation_deg=0.0)
+            Calibration(
+                cx=float(ROI_CENTER[0]),
+                cy=float(ROI_CENTER[1]),
+                r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
+                rotation_deg=float(0.0 + self.overlay_rot_deg),
+            ),
         )
 
         # restart camera
