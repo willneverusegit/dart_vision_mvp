@@ -700,6 +700,10 @@ class DartVisionApp:
                 # präzise, aus BoardMapper abgeleitete Geometrie
                 disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
                 disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
+                cv2.putText(disp_roi, f"Overlay rot:{self.overlay_rot_deg:.1f}°  scale:{self.overlay_scale:.3f}",
+                            (ROI_SIZE[0] - 300, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
+                cv2.putText(disp_roi, "Keys: \u2190\u2192 rot  \u2191\u2193 scale  s save",
+                            (ROI_SIZE[0] - 300, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
 
         # Impact markers
         for imp in self.dart.get_confirmed_impacts():
@@ -729,10 +733,7 @@ class DartVisionApp:
         if self.last_msg:
             cv2.putText(disp_roi, self.last_msg, (10, ROI_SIZE[1] - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 220), 2, cv2.LINE_AA)
-        cv2.putText(disp_roi, f"Overlay rot:{self.overlay_rot_deg:.1f}°  scale:{self.overlay_scale:.3f}",
-                    (ROI_SIZE[0] - 300, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
-        cv2.putText(disp_roi, "Keys: \u2190\u2192 rot  \u2191\u2193 scale  s save",
-                    (ROI_SIZE[0] - 300, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
+
 
         # Debug HUD
         if self.show_debug and self.fps is not None:
