@@ -43,20 +43,39 @@ from src.calibration.calib_io import load_calibration_yaml
 
 
 # ---------- Logging ----------
-def setup_logging():
-    fh = logging.FileHandler('dart_vision.log', encoding='utf-8')
-    fh.setLevel(logging.INFO)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+def setup_logging(debug: bool = True):
+    """Configure dual logging to console + file."""
+    log_level = logging.DEBUG if debug else logging.INFO
+
+    # Formatter (kurz für Konsole, lang für File)
+    fmt_console = logging.Formatter("%(levelname)s - %(message)s")
+    fmt_file = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    # FileHandler (alles in Log-Datei)
+    fh = logging.FileHandler("dart_vision.log", encoding="utf-8")
+    fh.setLevel(log_level)
+    fh.setFormatter(fmt_file)
+
+    # StreamHandler (direkt in Konsole)
     ch = logging.StreamHandler(sys.stdout)
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+    ch.setLevel(log_level)
+    ch.setFormatter(fmt_console)
+
     root = logging.getLogger()
-    root.setLevel(logging.INFO)
+    root.setLevel(log_level)
     root.handlers.clear()
     root.addHandler(fh)
     root.addHandler(ch)
 
-setup_logging()
+    # Optional: Bestätigung ausgeben
+    root.info(f"Logger initialized at level {logging.getLevelName(log_level)}")
+
+
+# Aufruf direkt danach:
+setup_logging(debug=True)
 logger = logging.getLogger("main")
 
 
@@ -65,6 +84,18 @@ logger = logging.getLogger("main")
 OVERLAY_MIN   = 0  # nur Treffer & Game-HUD (präsentationstauglich)
 OVERLAY_RINGS = 1  # Ringe + ROI-Kreis
 OVERLAY_FULL  = 2  # Voll: Ringe + Sektoren + technische HUDs
+
+# Extended key codes (work with cv2.waitKeyEx on Windows)
+VK_LEFT  = 0x250000
+VK_UP    = 0x260000
+VK_RIGHT = 0x270000
+VK_DOWN  = 0x280000
+
+# Legacy OpenCV codes (falls Backend diese liefert)
+OCV_LEFT  = 2424832
+OCV_UP    = 2490368
+OCV_RIGHT = 2555904
+OCV_DOWN  = 2621440
 
 CALIB_YAML = Path("config/calibration_unified.yaml")
 ROI_SIZE = (400, 400)
@@ -236,27 +267,38 @@ class DartVisionApp:
         if self.homography is not None:
             self.roi.set_homography_from_matrix(self.homography)
 
-        # Board mapping config laden
-        try:
-            with open("board.yaml", "r", encoding="utf-8") as f:
-                cfg_dict = yaml.safe_load(f) or {}
-            self.board_cfg = BoardConfig(**cfg_dict)
-            logger.info("[BOARD] board.yaml geladen.")
-        except Exception as e:
-            logger.warning(f"[BOARD] Konnte board.yaml nicht laden/validieren: {e}")
+        # --- Board mapping config laden ---
+        from pathlib import Path
+        board_path = Path(self.args.board_yaml).expanduser().resolve()
+        if not board_path.exists():
+            logger.warning(f"[BOARD] {board_path} nicht gefunden – nutze Defaults.")
             self.board_cfg = BoardConfig()  # Defaults
+        else:
+            try:
+                with open(board_path, "r", encoding="utf-8") as f:
+                    cfg_dict = yaml.safe_load(f) or {}
+                self.board_cfg = BoardConfig(**cfg_dict)
+                logger.info(f"[BOARD] geladen: {board_path}")
+            except Exception as e:
+                logger.warning(f"[BOARD] Fehler beim Laden ({e}) – nutze Defaults.")
+                self.board_cfg = BoardConfig()
 
-        # Mapper instanzieren, wenn Homography bereits gesetzt
-        if self.homography is not None and self.board_cfg is not None:
+        # Mapper instanziieren (nur wenn Homography/ROI-Radius vorhanden)
+        if self.homography is not None and self.board_cfg is not None and self.roi_board_radius > 0:
             self.board_mapper = BoardMapper(
                 self.board_cfg,
                 Calibration(
                     cx=float(ROI_CENTER[0]),
                     cy=float(ROI_CENTER[1]),
-                    r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
-                    rotation_deg=float(0.0 + self.overlay_rot_deg),
+                    r_outer_double_px=float(self.roi_board_radius) * float(getattr(self, "overlay_scale", 1.0)),
+                    rotation_deg=float(getattr(self, "overlay_rot_deg", 0.0)),
                 ),
             )
+            logger.info(f"[BOARD] Mapper init | rot={getattr(self, 'overlay_rot_deg', 0.0):.2f}°, "
+                        f"scale={getattr(self, 'overlay_scale', 1.0):.4f}, roiR={self.roi_board_radius:.1f}px")
+        else:
+            self.board_mapper = None
+            logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Radius).")
 
         # Vision modules
         self.motion = MotionDetector(MotionConfig(
@@ -578,6 +620,13 @@ class DartVisionApp:
             if H is not None:
                 self.homography = np.array(H, dtype=np.float64)
             self.logger.info("[LOAD] Applied ChArUco intrinsics from YAML.")
+            # Optional: overlay_adjust
+            ov = (data or {}).get("overlay_adjust") or {}
+            if "rotation_deg" in ov:
+                self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:
+                self.overlay_scale = float(ov["scale"])
+
         elif t == "aruco_quad":
             H = (data.get("homography") or {}).get("H")
             if H is not None:
@@ -585,6 +634,13 @@ class DartVisionApp:
             scale = data.get("scale") or {}
             self.mm_per_px = scale.get("mm_per_px")
             self.logger.info("[LOAD] Applied ArUco-Quad homography from YAML.")
+            # Optional: overlay_adjust
+            ov = (data or {}).get("overlay_adjust") or {}
+            if "rotation_deg" in ov:
+                self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:
+                self.overlay_scale = float(ov["scale"])
+
         elif t == "homography_only":
             H = (data.get("homography") or {}).get("H")
             if H is not None:
@@ -592,6 +648,13 @@ class DartVisionApp:
             metrics = data.get("metrics") or {}
             self.mm_per_px = metrics.get("mm_per_px")
             self.logger.info("[LOAD] Applied Homography-only from YAML.")
+            # Optional: overlay_adjust
+            ov = (data or {}).get("overlay_adjust") or {}
+            if "rotation_deg" in ov:
+                self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:
+                self.overlay_scale = float(ov["scale"])
+
         else:
             self.logger.warning("[LOAD] Unknown or missing type in YAML.")
 
@@ -689,21 +752,38 @@ class DartVisionApp:
         # Board rings (ROI)
         # ROI-Overlays nach Modus
         if self.homography is not None:
+            # 1) Motion zuerst (falls aktiv)
+            # (Hast du schon oben gemacht – gut so)
+
+            # 2) Einfache Referenzringe im RINGS/FULL Modus
             if self.overlay_mode >= OVERLAY_RINGS:
-                # ROI-Kreis (grün) + ein paar Referenzringe
                 r = int(self.roi_board_radius)
                 cv2.circle(disp_roi, ROI_CENTER, r, (0, 255, 0), 2)
                 for f in (0.05, 0.095, 0.53, 0.58, 0.94):
                     cv2.circle(disp_roi, ROI_CENTER, int(r * f), (255, 255, 0), 1)
 
+            # 3) Präzises Mapping nur im FULL-Modus
             if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
-                # präzise, aus BoardMapper abgeleitete Geometrie
                 disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
                 disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
-                cv2.putText(disp_roi, f"Overlay rot:{self.overlay_rot_deg:.1f}°  scale:{self.overlay_scale:.3f}",
-                            (ROI_SIZE[0] - 300, 44), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
-                cv2.putText(disp_roi, "Keys: \u2190\u2192 rot  \u2191\u2193 scale  s save",
-                            (ROI_SIZE[0] - 300, 66), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 2, cv2.LINE_AA)
+
+        # --- Ein zentraler Overlay/HUD-Block oben rechts (kein Duplikat) ---
+        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
+        cv2.putText(disp_roi, f"Overlay: {modes[self.overlay_mode]}",
+                    (ROI_SIZE[0] - 180, 24),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
+
+        # Zeige rot/scale nur, wenn BoardMapper aktiv ist
+        if self.board_mapper is not None:
+            cv2.putText(disp_roi, f"rot:{self.overlay_rot_deg:.1f}  scale:{self.overlay_scale:.3f}",
+                        (ROI_SIZE[0] - 180, 46),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
+
+        # Optional: zuletzt empfangenen Extended-Keycode (falls gesetzt)
+        if getattr(self, "last_key_dbg", "") and self.overlay_mode == OVERLAY_FULL:
+            cv2.putText(disp_roi, f"key:{self.last_key_dbg}",
+                        (ROI_SIZE[0] - 180, 68),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Impact markers
         for imp in self.dart.get_confirmed_impacts():
@@ -725,9 +805,7 @@ class DartVisionApp:
             status_txt = "FINISH" if self.game.done else f"Score: {self.game.score}"
         cv2.putText(disp_roi, status_txt, (10, y0),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
-        cv2.putText(disp_roi, f"Overlay: {modes[self.overlay_mode]}", (ROI_SIZE[0] - 180, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
+
 
         # Letzter Wurf (rechts unten)
         if self.last_msg:
@@ -741,6 +819,7 @@ class DartVisionApp:
             cv2.putText(disp_roi, f"FPS: {stats.fps_median:.1f}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
             cv2.putText(disp_roi, f"Time: {stats.frame_time_ms:.1f}ms", (10,60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
             cv2.putText(disp_roi, f"Darts: {self.total_darts}", (10,90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
+
 
         canvas = np.zeros((600, 1200, 3), dtype=np.uint8)
         canvas[0:600, 0:800] = disp_main
@@ -780,8 +859,44 @@ class DartVisionApp:
                     cv2.putText(disp, "PAUSED", (500, 50), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,165,255), 3)
 
                 cv2.imshow("Dart Vision MVP", disp)
-                key = cv2.waitKey(1) & 0xFF
 
+                # 1) Key holen (Extended Keys für Pfeile!)
+                raw_key = cv2.waitKeyEx(1)
+                key = raw_key & 0xFF  # nur für 'normale' Tasten wie 'q','s',...
+
+                # 2) Debug: zuletzt empfangenen Key anzeigen
+                if raw_key != -1:
+                    logger.debug(f"raw_key={raw_key} (0x{raw_key:08X}) masked={key}")
+                    self.last_key_dbg = f"{raw_key} (0x{raw_key:08X})"
+
+                # 3) Pfeiltasten (immer auf raw_key prüfen!)
+                if raw_key in (VK_LEFT, OCV_LEFT):
+                    self.overlay_rot_deg -= 0.5
+                    if self.board_mapper:
+                        self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
+                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
+
+                elif raw_key in (VK_RIGHT, OCV_RIGHT):
+                    self.overlay_rot_deg += 0.5
+                    if self.board_mapper:
+                        self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
+                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
+
+                elif raw_key in (VK_UP, OCV_UP):
+                    self.overlay_scale = min(1.20, self.overlay_scale * 1.01)  # +1%
+                    if self.board_mapper:
+                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
+                            self.overlay_scale)
+                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
+
+                elif raw_key in (VK_DOWN, OCV_DOWN):
+                    self.overlay_scale = max(0.80, self.overlay_scale / 1.01)  # -1%
+                    if self.board_mapper:
+                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
+                            self.overlay_scale)
+                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
+
+                # 4) ASCII-Tasten (auf 'key' prüfen)
                 if key == ord('q'):
                     self.running = False
                 elif key == ord('p'):
@@ -791,53 +906,31 @@ class DartVisionApp:
                 elif key == ord('m'):
                     self.show_motion = not self.show_motion
                 elif key == ord('r'):
-                    self.dart.clear_impacts(); self.total_darts = 0
+                    self.dart.clear_impacts();
+                    self.total_darts = 0
                 elif key == ord('s'):
-                    fn = f"screenshot_{int(time.time())}.jpg"; cv2.imwrite(fn, disp); logger.info(f"Saved {fn}")
+                    # Screenshot (s bleibt Screenshot)
+                    fn = f"screenshot_{int(time.time())}.jpg"
+                    cv2.imwrite(fn, disp)
+                    logger.info(f"Saved {fn}")
                 elif key == ord('c'):
-                    # Recalibrate: run UI, then re-apply homography
                     self._recalibrate_and_apply()
                 elif key == ord('o'):
+                    # Nur einmal belegen, nicht doppelt
                     self.overlay_mode = (self.overlay_mode + 1) % 3
                     modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
                     logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
                 elif key == ord('g'):
-                    self.game.reset()
+                    self.game.reset();
                     self.last_msg = ""
                     logger.info(f"[GAME] Reset {self.game.mode}")
                 elif key == ord('h'):
                     new_mode = GameMode._301 if self.game.mode == GameMode.ATC else GameMode.ATC
-                    self.game.switch_mode(new_mode)
+                    self.game.switch_mode(new_mode);
                     self.last_msg = ""
                     logger.info(f"[GAME] Switch to {self.game.mode}")
-                elif key == ord('o'):
-                    self.overlay_mode = (self.overlay_mode + 1) % 3
-                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
-                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
-
-                # ---- Overlay fine-tune live ----
-                elif key == 81:  # ←
-                    self.overlay_rot_deg -= 0.5
-                    if self.board_mapper:
-                        self.board_mapper.calib.rotation_deg = self.overlay_rot_deg
-                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
-                elif key == 83:  # →
-                    self.overlay_rot_deg += 0.5
-                    if self.board_mapper:
-                        self.board_mapper.calib.rotation_deg = self.overlay_rot_deg
-                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
-                elif key == 82:  # ↑
-                    self.overlay_scale *= 1.01  # +1%
-                    if self.board_mapper:
-                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * self.overlay_scale
-                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
-                elif key == 84:  # ↓
-                    self.overlay_scale /= 1.01  # -1%
-                    if self.board_mapper:
-                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * self.overlay_scale
-                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
-                elif key == ord('S') or key == ord('s'):  # speichern
-                    # lade aktuelles YAML (falls vorhanden), sonst neues Dict
+                elif key == ord('x'):
+                    # Overlay-Offsets in YAML speichern (NICHT 's', das ist Screenshot)
                     try:
                         cfg = load_calibration_yaml(CALIB_YAML) or {}
                     except Exception:
@@ -857,37 +950,75 @@ class DartVisionApp:
 
     def _recalibrate_and_apply(self):
         cv2.destroyAllWindows()
-        self.camera.stop()
+        if self.camera:
+            self.camera.stop()
+
         ok = self._calibration_ui()
-        if ok:
-            # apply homography to ROI
+
+        if not ok:
+            logger.warning("[RECAL] UI aborted/no homography. Keeping previous calibration.")
+        else:
+            # 1) Homographie ins ROI übernehmen
             if self.homography is not None:
                 self.roi.set_homography_from_matrix(self.homography)
+            else:
+                logger.warning("[RECAL] No homography returned from UI.")
 
-        # Mapper aktualisieren (falls BoardConfig vorhanden)
-        if self.board_cfg is None:
+            # 2) Overlay-Offsets evtl. aus YAML nachladen (falls im UI mit 's' gespeichert)
             try:
-                with open("board.yaml", "r", encoding="utf-8") as f:
+                cfg = load_calibration_yaml(CALIB_YAML) or {}
+                ov = (cfg or {}).get("overlay_adjust") or {}
+                if "rotation_deg" in ov:
+                    self.overlay_rot_deg = float(ov["rotation_deg"])
+                if "scale" in ov:
+                    self.overlay_scale = float(ov["scale"])
+            except Exception as e:
+                logger.debug(f"[RECAL] No overlay_adjust in YAML: {e}")
+
+        # 3) Board mapping config laden (IMMER versuchen – nicht im except!)
+        from pathlib import Path
+        board_path = Path(getattr(self.args, "board_yaml", "board.yaml")).expanduser().resolve()
+        if not board_path.exists():
+            logger.warning(f"[BOARD] {board_path} nicht gefunden – nutze Defaults.")
+            self.board_cfg = BoardConfig()  # Defaults
+        else:
+            try:
+                with open(board_path, "r", encoding="utf-8") as f:
                     cfg_dict = yaml.safe_load(f) or {}
                 self.board_cfg = BoardConfig(**cfg_dict)
-            except Exception:
+                logger.info(f"[BOARD] geladen: {board_path}")
+            except Exception as e:
+                logger.warning(f"[BOARD] Fehler beim Laden ({e}) – nutze Defaults.")
                 self.board_cfg = BoardConfig()
 
-        self.board_mapper = BoardMapper(
-            self.board_cfg,
-            Calibration(
-                cx=float(ROI_CENTER[0]),
-                cy=float(ROI_CENTER[1]),
-                r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
-                rotation_deg=float(0.0 + self.overlay_rot_deg),
-            ),
-        )
+        # 4) Mapper neu aufbauen, wenn möglich (nach Homography/Radius/Offsets)
+        if self.homography is not None and self.board_cfg is not None and self.roi_board_radius and self.roi_board_radius > 0:
+            self.board_mapper = BoardMapper(
+                self.board_cfg,
+                Calibration(
+                    cx=float(ROI_CENTER[0]),
+                    cy=float(ROI_CENTER[1]),
+                    r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
+                    rotation_deg=float(self.overlay_rot_deg),
+                ),
+            )
+            logger.info(f"[RECAL] Mapper updated | rot={self.overlay_rot_deg:.2f}°, "
+                        f"scale={self.overlay_scale:.4f}, roiR={self.roi_board_radius:.1f}px")
+        else:
+            self.board_mapper = None
+            logger.warning("[RECAL] Mapper not updated (missing homography/board_cfg/roi_board_radius)")
 
-        # restart camera
+        # 5) Kamera neu starten (IMMER)
         cam_src = self.args.video if self.args.video else self.args.webcam
-        self.camera = ThreadedCamera(CameraConfig(src=cam_src, max_queue_size=5, buffer_size=1,
-                                                  width=self.args.width, height=self.args.height))
-        self.camera.start()
+        self.camera = ThreadedCamera(CameraConfig(
+            src=cam_src, max_queue_size=5, buffer_size=1,
+            width=self.args.width, height=self.args.height
+        ))
+        if not self.camera.start():
+            logger.error("[RECAL] camera.start() failed")
+        else:
+            logger.info("[RECAL] camera restarted")
+
 
     def cleanup(self):
         logger.info("Cleaning up...")
@@ -926,6 +1057,8 @@ def main():
                    help="Expected IDs for the 4 markers (optional)")
     p.add_argument("--aruco-size-mm", type=str, default=None,
                    help="Physical rectangle size as WxH in mm, e.g. '600x600' or '800x600'")
+    p.add_argument("--board-yaml", type=str, default="board.yaml",
+                   help="Pfad zur Board-Geometrie (normierte Radien/Sektoren)")
 
     p.add_argument("--motion-threshold", type=int, default=50, help="MOG2 variance threshold")
     p.add_argument("--motion-pixels", type=int, default=500, help="Min motion pixels")
