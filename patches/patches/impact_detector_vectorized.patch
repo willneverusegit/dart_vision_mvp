@@ -30,18 +30,17 @@ index 456b919d0f1a527502547b2cd632724d28285102..1a9cc309e07f17f3e86aab79f003c690
  
 -        candidates = []
 +        if not contours:
-+            return []
+            return []
  
--        for contour in contours:
--            area = cv2.contourArea(contour)
-+        areas = np.fromiter(
-+            (cv2.contourArea(contour) for contour in contours),
-+            dtype=np.float32,
-+            count=len(contours)
-+        )
-+        valid_indices = np.nonzero(
-+            (areas >= self.config.min_area) & (areas <= self.config.max_area)
-+        )[0]
+
+        areas = np.fromiter(
+            (cv2.contourArea(contour) for contour in contours),
+            dtype=np.float32,
+            count=len(contours)
+        )
+        valid_indices = np.nonzero(
+            (areas >= self.config.min_area) & (areas <= self.config.max_area)
+        )[0]
  
 -            # Filter by area
 -            if not (self.config.min_area <= area <= self.config.max_area):

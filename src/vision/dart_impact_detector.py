@@ -175,14 +175,25 @@ class DartImpactDetector:
             cv2.CHAIN_APPROX_SIMPLE
         )
 
+        if not contours:
+            return []
+
+        areas = np.fromiter(
+            (cv2.contourArea(contour) for contour in contours),
+            dtype=np.float32,
+            count=len(contours)
+        )
+        valid_indices = np.nonzero(
+            (areas >= self.config.min_area) & (areas <= self.config.max_area)
+        )[0]
+        if valid_indices.size == 0:
+            return []
+
         candidates = []
+        for idx in valid_indices:
+            contour = contours[idx]
+            area = float(areas[idx])
 
-        for contour in contours:
-            area = cv2.contourArea(contour)
-
-            # Filter by area
-            if not (self.config.min_area <= area <= self.config.max_area):
-                continue
 
             # Get bounding box
             x, y, w, h = cv2.boundingRect(contour)
