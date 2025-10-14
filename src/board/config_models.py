@@ -11,8 +11,8 @@ class Angles(BaseModel):
 class Radii(BaseModel):
     r_bull_inner: float = 0.02
     r_bull_outer: float = 0.063
-    r_triple_inner: float = 0.47
-    r_triple_outer: float = 0.53
+    r_triple_inner: float = 0.55
+    r_triple_outer: float = 0.60
     r_double_inner: float = 0.94
     r_double_outer: float = 1.0
     radial_tolerance: float = 0.01

@@ -288,7 +288,7 @@ class FieldMapper:
         self.config = config or FieldMapperConfig()
 
         self.sector_angle_deg = 18  # 360° / 20 sectors
-        self.sector_offset_deg = 9  # Offset to center 20 at top
+        self.sector_offset_deg = 0  # Offset to center 20 at top
 
     def point_to_score(
             self,

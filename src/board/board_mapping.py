@@ -39,7 +39,7 @@ class BoardMapper:
         theta = (theta - self.calib.rotation_deg) % 360.0
 
         # Rebase to theta0
-        theta_rel = (theta - self.cfg.angles.theta0_deg) % 360.0
+        theta_rel = (theta - self.cfg.angles.theta0_deg) % 360.0 +9.0
 
         if self.cfg.angles.clockwise:
             theta_rel = (360.0 - theta_rel) % 360.0

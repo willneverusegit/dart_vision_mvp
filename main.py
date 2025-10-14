@@ -263,6 +263,13 @@ class DartVisionApp:
             cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
             y += 22
 
+    def _overlay_center_radius(self):
+        """Gibt (cx, cy, r_base) zurück: Center inkl. Offsets + skalierten Doppel-Außenradius."""
+        cx = int(ROI_CENTER[0] + getattr(self, "overlay_center_dx", 0.0))
+        cy = int(ROI_CENTER[1] + getattr(self, "overlay_center_dy", 0.0))
+        r_base = int(float(self.roi_board_radius) * float(getattr(self, "overlay_scale", 1.0)))
+        return cx, cy, r_base
+
     def _points_from_mapping(self, ring: str, sector: int) -> int:
         """Rechnet BoardMapper-Ergebnis in Punkte um."""
         if ring == "bull_inner":
@@ -855,10 +862,13 @@ class DartVisionApp:
 
             # 2) Einfache Referenzringe im RINGS/FULL Modus
             if self.overlay_mode >= OVERLAY_RINGS:
-                r = int(self.roi_board_radius)
-                cv2.circle(disp_roi, ROI_CENTER, r, (0, 255, 0), 2)
-                for f in (0.05, 0.095, 0.53, 0.58, 0.94):
-                    cv2.circle(disp_roi, ROI_CENTER, int(r * f), (255, 255, 0), 1)
+                cx, cy, r_base = self._overlay_center_radius()
+                # äußerer Doppelring (grün)
+                cv2.circle(disp_roi, (cx, cy), r_base, (0, 255, 0), 2, cv2.LINE_AA)
+                # weitere Referenzringe (gelb) skaliert um r_base
+                for f in (0.05, 0.095, self.board_cfg.radii.r_triple_outer,
+                          self.board_cfg.radii.r_double_inner):
+                    cv2.circle(disp_roi, (cx, cy), max(1, int(r_base * float(f))), (255, 255, 0), 1, cv2.LINE_AA)
 
             # 3) Präzises Mapping nur im FULL-Modus
             if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
