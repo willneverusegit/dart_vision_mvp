@@ -1,0 +1,48 @@
+name: Patch Verify & Apply
+on:
+  workflow_dispatch:
+    inputs:
+      patch_text:
+        description: 'Raw patch text (optional if patch_path provided)'
+        required: false
+      patch_path:
+        description: 'Repo-relative patch path (e.g., patches/impact_detector_vectorized.patch)'
+        required: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          python -m pip install -U pip pytest
+      - name: Prepare patch
+        id: prep
+        run: |
+          if [ -n "${{ github.event.inputs.patch_text }}" ]; then
+            mkdir -p patches
+            printf "%s" "${{ github.event.inputs.patch_text }}" > patches/ci_input.patch
+            echo "patchfile=patches/ci_input.patch" >> $GITHUB_OUTPUT
+          elif [ -n "${{ github.event.inputs.patch_path }}" ]; then
+            echo "patchfile=${{ github.event.inputs.patch_path }}" >> $GITHUB_OUTPUT
+          else
+            echo "No patch provided"; exit 1
+          fi
+      - name: Dry-run
+        run: |
+          python tools/patch_manager.py --patch "${{ steps.prep.outputs.patchfile }}" --dry-run
+      - name: Sandbox verify with tests
+        run: |
+          python tools/patch_manager.py --patch "${{ steps.prep.outputs.patchfile }}" --sandbox --tests "pytest -q"
+      - name: Archive logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: patch-logs
+          path: patches/applied.log
