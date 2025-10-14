@@ -179,80 +179,79 @@ class DartVisionApp:
     def _hough_refine_center(self, roi_bgr) -> bool:
         """
         Findet den äußeren Doppelring als Kreis und passt Overlay-Center & Scale an.
-        Return True, wenn aktualisiert wurde.
+        Verwendet aktuelles Overlay-Center/-Radius als Referenz, sanfte Gains, Robustheit.
         """
         if roi_bgr is None:
             return False
 
         gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-
-        # Kontrast optional anheben
         if getattr(self.args, "clahe", False):
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray = clahe.apply(gray)
-
-        # leicht glätten + Kanten
         gray = cv2.medianBlur(gray, 5)
-        edges_hi = 120  # du kannst das feintunen
-        edges_lo = int(edges_hi * 0.5)
 
-        # Hough-Parameter um r_guess herum
-        # Nutze die Basis, falls vorhanden, sonst den aktuellen ROI-Radius
-        r_guess = int(max(10, self.roi_base_radius if self.roi_base_radius else self.roi_board_radius))
-        r_guess = int(max(10, self.roi_board_radius))
-        minR = int(0.85 * r_guess)
-        maxR = int(1.15 * r_guess)
+        # Erwartung aus aktuellem Overlay-Zustand
+        cx_cur = float(ROI_CENTER[0] + self.overlay_center_dx)
+        cy_cur = float(ROI_CENTER[1] + self.overlay_center_dy)
+        r_cur = float(self.roi_board_radius) * float(self.overlay_scale)
+
+        # Hough-Radiusfenster um den aktuellen Sollradius
+        r_min = int(max(10, 0.88 * r_cur))
+        r_max = int(min(ROI_SIZE[0], 1.12 * r_cur))
 
         # Hough
         circles = cv2.HoughCircles(
-            gray, cv2.HOUGH_GRADIENT, dp=1.2, minDist=100,
-            param1=edges_hi, param2=40,
-            minRadius=minR, maxRadius=maxR
+            gray, cv2.HOUGH_GRADIENT,
+            dp=1.2, minDist=100,
+            param1=120, param2=40,
+            minRadius=r_min, maxRadius=r_max
         )
-
         if circles is None or len(circles) == 0:
             self.last_msg = "Hough: no circle"
             return False
 
-        circles = np.round(circles[0, :]).astype(int)
+        cs = np.round(circles[0, :]).astype(int)
 
-        # Nimm den Kreis, der dem ROI_CENTER am nächsten liegt (oder den größten)
-        cx0, cy0 = ROI_CENTER
-        circles = sorted(circles, key=lambda c: (c[2], -abs(c[0] - cx0) - abs(c[1] - cy0)), reverse=True)
-        c_best = circles[0]
-        cx, cy, r = int(c_best[0]), int(c_best[1]), int(c_best[2])
+        # Nimm den Kreis, der (a) am nächsten am r_cur liegt und (b) dem erwarteten Center nahe ist
+        def score(c):
+            cx, cy, r = c
+            dr = abs(r - r_cur)
+            dc = abs(cx - cx_cur) + abs(cy - cy_cur)
+            return (dr, dc)
 
-        # Delta zur aktuellen Overlay-Mitte
-        dx = float(cx - cx0)
-        dy = float(cy - cy0)
+        cs = sorted(cs, key=score)
+        cx, cy, r = [int(v) for v in cs[0]]
 
-        # Sanity: kleine Offsets und sinnvolle Radien erzwingen
-        if abs(dx) > ROI_SIZE[0] * 0.2 or abs(dy) > ROI_SIZE[1] * 0.2:
-            self.last_msg = "Hough: center drift too large, ignored"
+        # Abweichungen
+        dx_meas = float(cx) - cx_cur
+        dy_meas = float(cy) - cy_cur
+        sr_meas = float(r) / max(r_cur, 1e-6)
+
+        # Sanfte Gains (keine Sprünge)
+        k_center = 0.35  # 0..1  (Center-Anteil je Update)
+        k_scale = 0.30  # 0..1  (Scale-Anteil je Update)
+
+        # Nur anwenden, wenn plausibel
+        # (Kleinere Schwellwerte = empfindlicher; größere = stabiler)
+        if (abs(dx_meas) > ROI_SIZE[0] * 0.4) or (abs(dy_meas) > ROI_SIZE[1] * 0.4):
+            self.last_msg = "Hough: center jump too large → ignore"
             return False
-        if r < 0.6 * r_guess or r > 1.4 * r_guess:
-            self.last_msg = "Hough: radius out of range, ignored"
+        if not (0.85 <= sr_meas <= 1.15):
+            self.last_msg = "Hough: radius jump too large → ignore"
             return False
 
-        # Anwenden: Center-Offsets inkrementell addieren
-        self.overlay_center_dx += dx
-        self.overlay_center_dy += dy
-        # Skalierung RELATIV zur festen Basis (nicht kumulativ!)
-        base = float(self.roi_base_radius if self.roi_base_radius else self.roi_board_radius)
-        if base <= 0:
-             self.last_msg = "Hough: invalid base radius"
-        return False
-        self.overlay_scale = float(r) / base
-        # Schutzkorridor gegen Ausreißer
-        self.overlay_scale = max(0.80, min(1.20, self.overlay_scale))
-        self._roi_adjust_dirty = True
+        # Update (gegen aktuelles SOLL, nicht ROI_CENTER!)
+        self.overlay_center_dx += k_center * dx_meas
+        self.overlay_center_dy += k_center * dy_meas
+        self.overlay_scale *= (1.0 + k_scale * (sr_meas - 1.0))
 
+        # Werte direkt in Mapper schieben, wenn vorhanden
         if self.board_mapper is not None:
+            self.board_mapper.calib.cx = float(ROI_CENTER[0] + self.overlay_center_dx)
             self.board_mapper.calib.cy = float(ROI_CENTER[1] + self.overlay_center_dy)
-            self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
-            self.overlay_scale)
+            self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(self.overlay_scale)
 
-        self.last_msg = f"Hough OK: dx={dx:+.1f}, dy={dy:+.1f}, r={r}"
+        self.last_msg = f"Hough OK: d=({dx_meas:+.1f},{dy_meas:+.1f}) r={r} → cx={self.board_mapper.calib.cx:.1f}, cy={self.board_mapper.calib.cy:.1f}, s={self.overlay_scale:.4f}"
         return True
 
     def _hud_compute(self, gray: np.ndarray):
@@ -442,7 +441,6 @@ class DartVisionApp:
                 logger.debug(f"[ROI] base radius set -> {self.roi_base_radius:.2f}px")
 
         # --- Board mapping config laden ---
-        from pathlib import Path
         board_path = Path(self.args.board_yaml).expanduser().resolve()
         if not board_path.exists():
             logger.warning(f"[BOARD] {board_path} nicht gefunden – nutze Defaults.")
@@ -940,7 +938,9 @@ class DartVisionApp:
                         logger.info(f"[SCORE] {label} -> {pts} | {self.last_msg}")
                 if self.show_debug:
                     logger.info(f"[DART #{self.total_darts}] pos={impact.position} conf={impact.confidence:.2f}")
-
+        # 🟡 Auto-Hough alignment (alle 10 Frames, nur im ALIGN-Modus)
+        if self.overlay_mode == OVERLAY_ALIGN and self.align_auto and (self.frame_count % 10 == 0):
+             self._hough_refine_center(roi_frame)
         return roi_frame, motion_detected, fg_mask, impact
 
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, impact):
@@ -1197,6 +1197,17 @@ class DartVisionApp:
                     self.game.switch_mode(new_mode);
                     self.last_msg = ""
                     logger.info(f"[GAME] Switch to {self.game.mode}")
+
+                elif key == ord('R'):
+                    self.overlay_center_dx = 0.0
+                    self.overlay_center_dy = 0.0
+                    self.overlay_scale = 1.0
+                    if self.board_mapper:
+                        self.board_mapper.calib.cx = float(ROI_CENTER[0])
+                        self.board_mapper.calib.cy = float(ROI_CENTER[1])
+                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius)
+                    logger.info("[OVERLAY] reset center/scale")
+
 
                 elif key == ord('t'):
                     # einmalige automatische Ausrichtung via Hough
