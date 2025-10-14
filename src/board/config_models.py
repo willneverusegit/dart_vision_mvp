@@ -10,11 +10,11 @@ class Angles(BaseModel):
 
 class Radii(BaseModel):
     r_bull_inner: float = 0.02
-    r_bull_outer: float = 0.063
-    r_triple_inner: float = 0.55
-    r_triple_outer: float = 0.60
-    r_double_inner: float = 0.94
-    r_double_outer: float = 1.0
+    r_bull_outer: float = 0.06
+    r_triple_inner: float = 0.4
+    r_triple_outer: float = 0.45
+    r_double_inner: float = 0.93
+    r_double_outer: float = 1.01
     radial_tolerance: float = 0.01
 
     @validator("r_bull_inner", "r_bull_outer", "r_triple_inner", "r_triple_outer", "r_double_inner", "r_double_outer")

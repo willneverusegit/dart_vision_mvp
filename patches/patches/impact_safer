@@ -1,0 +1,382 @@
+ (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF'
+diff --git a/src/vision/dart_impact_detector.py b/src/vision/dart_impact_detector.py
+index 456b919d0f1a527502547b2cd632724d28285102..415e8da8ef29ccfe6b6678cbe6be89142dd405e8 100644
+--- a/src/vision/dart_impact_detector.py
++++ b/src/vision/dart_impact_detector.py
+@@ -5,118 +5,148 @@ Detects dart impacts using shape analysis and temporal stability.
+ Features:
+ - Multi-frame confirmation (Land-and-Stick logic)
+ - Shape-based dart detection
+ - False positive filtering
+ """
+
+ import cv2
+ import numpy as np
+ import logging
+ from typing import Optional, List, Tuple
+ from dataclasses import dataclass
+ from collections import deque
+
+ logger = logging.getLogger(__name__)
+
+
+ @dataclass
+ class DartCandidate:
+     """Potential dart detection"""
+     position: Tuple[int, int]
+     area: float
+     confidence: float
+     frame_index: int
+     timestamp: float
+     aspect_ratio: float
++    solidity: float
++    extent: float
++    edge_density: float
+
+
+ @dataclass
+ class DartImpact:
+     """Confirmed dart impact"""
+     position: Tuple[int, int]
+     confidence: float
+     first_detected_frame: int
+     confirmed_frame: int
+     confirmation_count: int
+     timestamp: float
+
+
+ @dataclass
+ class DartDetectorConfig:
+     """Dart detector configuration"""
+     # Shape constraints
+     min_area: int = 10
+     max_area: int = 1000
+     min_aspect_ratio: float = 0.3
+     max_aspect_ratio: float = 3.0
+
+    # Advanced shape heuristics
+    min_solidity: float = 0.1
+    max_solidity: float = 0.95
+    min_extent: float = 0.05
+    max_extent: float = 0.75
+    min_edge_density: float = 0.02
+    max_edge_density: float = 0.35
+    preferred_aspect_ratio: float = 0.35
+    aspect_ratio_tolerance: float = 1.5  # multiplier on preferred ratio for scoring
+
+    # Edge detection
+    edge_canny_threshold1: int = 40
+    edge_canny_threshold2: int = 120
+
+    # Confidence weighting
+    circularity_weight: float = 0.35
+    solidity_weight: float = 0.2
+    extent_weight: float = 0.15
+    edge_weight: float = 0.15
+    aspect_ratio_weight: float = 0.15
+
+     # Temporal confirmation
+     confirmation_frames: int = 3
+     position_tolerance_px: int = 20
+
+     # ✅ NEW: Cooldown
+     cooldown_frames: int = 30  # Ignore region for N frames after detection
+     cooldown_radius_px: int = 50  # Radius around last detection
+
+     # History
+     candidate_history_size: int = 20
+
+    # Motion mask pre-processing
+    motion_mask_smoothing_kernel: int = 5  # 0 to disable, odd numbers recommended
+
+
+ class DartImpactDetector:
+     """Dart impact detector with temporal confirmation and cooldown."""
+
+     def __init__(self, config: Optional[DartDetectorConfig] = None):
+         self.config = config or DartDetectorConfig()
+
+         # Tracking
+         self.current_candidate: Optional[DartCandidate] = None
+         self.confirmation_count = 0
+
+         # History
+         self.candidate_history: deque = deque(maxlen=self.config.candidate_history_size)
+         self.confirmed_impacts: List[DartImpact] = []
+
+         # ✅ NEW: Cooldown tracking
+         self.cooldown_regions: List[Tuple[Tuple[int, int], int]] = []  # (position, frame_until)
+
+     def detect_dart(
+             self,
+             frame: np.ndarray,
+             motion_mask: np.ndarray,
+             frame_index: int,
+             timestamp: float
+     ) -> Optional[DartImpact]:
+         """Detect dart impact with temporal confirmation and cooldown."""
+
+         # ✅ Update cooldowns (remove expired)
+         self.cooldown_regions = [
+             (pos, until) for pos, until in self.cooldown_regions
+             if until > frame_index
+         ]
+
+        # Pre-process motion mask to stabilise contours
+        processed_mask = self._preprocess_motion_mask(motion_mask)
+
+         # Find dart-like shapes
+         candidates = self._find_dart_shapes(frame, processed_mask, frame_index, timestamp)
+
+         # ✅ Filter candidates in cooldown regions
+         candidates = [
+             c for c in candidates
+             if not self._is_in_cooldown(c.position, frame_index)
+         ]
+
+         if not candidates:
+             self._reset_tracking()
+             return None
+
+         # Get best candidate
+         best_candidate = candidates[0]
+         self.candidate_history.append(best_candidate)
+
+         # Check temporal stability
+         if self._is_same_position(best_candidate, self.current_candidate):
+             self.confirmation_count += 1
+         else:
+             self.current_candidate = best_candidate
+             self.confirmation_count = 1
+
+         # Check if confirmed
+         if self.confirmation_count >= self.config.confirmation_frames:
+             impact = DartImpact(
+@@ -137,109 +167,219 @@ class DartImpactDetector:
+             self._reset_tracking()
+
+             logger.info(f"Dart impact confirmed at {impact.position}, confidence={impact.confidence:.2f}")
+             return impact
+
+         return None
+
+     def _is_in_cooldown(self, position: Tuple[int, int], frame_index: int) -> bool:
+         """Check if position is in cooldown region."""
+         for cooldown_pos, cooldown_until in self.cooldown_regions:
+             if cooldown_until <= frame_index:
+                 continue
+
+             # Check distance
+             dx = position[0] - cooldown_pos[0]
+             dy = position[1] - cooldown_pos[1]
+             distance = np.sqrt(dx * dx + dy * dy)
+
+             if distance < self.config.cooldown_radius_px:
+                 return True
+
+         return False
+
+     # ... rest bleibt gleich
+
+    def _preprocess_motion_mask(self, motion_mask: np.ndarray) -> np.ndarray:
+        """Reduce noise in motion mask before contour extraction."""
+
+        kernel_size = self.config.motion_mask_smoothing_kernel
+        if kernel_size and kernel_size > 1:
+            if kernel_size % 2 == 0:
+                kernel_size += 1
+
+            blurred = cv2.GaussianBlur(motion_mask, (kernel_size, kernel_size), 0)
+            _, thresh = cv2.threshold(
+                blurred,
+                0,
+                255,
+                cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            return thresh
+
+        return motion_mask
+
+     def _find_dart_shapes(
+             self,
+             frame: np.ndarray,
+             motion_mask: np.ndarray,
+             frame_index: int,
+             timestamp: float
+     ) -> List[DartCandidate]:
+         """Find dart-like objects in motion mask"""
+
+         # Find contours
+         contours, _ = cv2.findContours(
+             motion_mask,
+             cv2.RETR_EXTERNAL,
+             cv2.CHAIN_APPROX_SIMPLE
+         )
+
+         candidates = []
+
+         for contour in contours:
+             area = cv2.contourArea(contour)
+
+             # Filter by area
+             if not (self.config.min_area <= area <= self.config.max_area):
+                 continue
+
+             # Get bounding box
+             x, y, w, h = cv2.boundingRect(contour)
+
++            if w == 0 or h == 0:
++                continue
++
+             # Calculate aspect ratio
+             aspect_ratio = float(w) / h if h > 0 else 0
+
+             # Filter by aspect ratio (darts are elongated)
+             if not (self.config.min_aspect_ratio <= aspect_ratio <= self.config.max_aspect_ratio):
+                 continue
+
+             # Calculate center
+             M = cv2.moments(contour)
+             if M['m00'] == 0:
+                 continue
+
+             cx = int(M['m10'] / M['m00'])
+             cy = int(M['m01'] / M['m00'])
+
+-            # Calculate confidence based on shape quality
+-            # Darts have low circularity (elongated shape)
+            # Evaluate solidity (area relative to convex hull)
+            hull = cv2.convexHull(contour)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / hull_area if hull_area > 0 else 0.0
+
+            if not (self.config.min_solidity <= solidity <= self.config.max_solidity):
+                continue
+
+            # Extent of filled area within the bounding box
+            extent = area / float(w * h) if (w * h) > 0 else 0.0
+
+            if not (self.config.min_extent <= extent <= self.config.max_extent):
+                continue
+
+            # Edge density to ensure crisp object edges
+            roi = frame[y:y + h, x:x + w]
+            if roi.size == 0:
+                continue
+
+            if roi.ndim == 3:
+                roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            else:
+                roi_gray = roi
+
+            edges = cv2.Canny(
+                roi_gray,
+                self.config.edge_canny_threshold1,
+                self.config.edge_canny_threshold2
+            )
+            edge_density = (
+                float(np.count_nonzero(edges)) /
+                float(edges.shape[0] * edges.shape[1])
+            ) if edges.size else 0.0
+
+            if edge_density < self.config.min_edge_density:
+                continue
+
+            # Calculate confidence using multiple heuristics
+             perimeter = cv2.arcLength(contour, True)
+-            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0
++            circularity = 4 * np.pi * area / (perimeter * perimeter) if perimeter > 0 else 0.0
++
++            circularity_score = np.clip(1.0 - circularity, 0.0, 1.0)
++
++            solidity_score = np.clip(
++                (solidity - self.config.min_solidity) /
++                max(self.config.max_solidity - self.config.min_solidity, 1e-6),
++                0.0,
++                1.0
++            )
++
++            extent_score = np.clip(
++                (extent - self.config.min_extent) /
++                max(self.config.max_extent - self.config.min_extent, 1e-6),
++                0.0,
++                1.0
++            )
++
++            edge_score = np.clip(
++                (edge_density - self.config.min_edge_density) /
++                max(self.config.max_edge_density - self.config.min_edge_density, 1e-6),
++                0.0,
++                1.0
++            )
++
++            preferred_ratio = self.config.preferred_aspect_ratio
++            tolerance = preferred_ratio * self.config.aspect_ratio_tolerance
++            ratio_delta = abs(aspect_ratio - preferred_ratio)
++            aspect_ratio_score = np.clip(
++                1.0 - (ratio_delta / max(tolerance, 1e-6)),
++                0.0,
++                1.0
++            )
++
++            total_weight = (
++                self.config.circularity_weight +
++                self.config.solidity_weight +
++                self.config.extent_weight +
++                self.config.edge_weight +
++                self.config.aspect_ratio_weight
++            )
++
++            confidence = (
++                self.config.circularity_weight * circularity_score +
++                self.config.solidity_weight * solidity_score +
++                self.config.extent_weight * extent_score +
++                self.config.edge_weight * edge_score +
++                self.config.aspect_ratio_weight * aspect_ratio_score
++            )
++
++            if total_weight > 0:
++                confidence = confidence / total_weight
+
+-            # Lower circularity = higher confidence for dart
+-            confidence = 1.0 - circularity
+             confidence = np.clip(confidence, 0.0, 1.0)
+
+             candidate = DartCandidate(
+                 position=(cx, cy),
+                 area=area,
+                 confidence=confidence,
+                 frame_index=frame_index,
+                 timestamp=timestamp,
+-                aspect_ratio=aspect_ratio
++                aspect_ratio=aspect_ratio,
++                solidity=solidity,
++                extent=extent,
++                edge_density=edge_density
+             )
+
+             candidates.append(candidate)
+
+         # Sort by confidence (best first)
+         candidates.sort(key=lambda c: c.confidence, reverse=True)
+
+         return candidates
+
+     def _is_same_position(
+             self,
+             candidate: Optional[DartCandidate],
+             reference: Optional[DartCandidate]
+     ) -> bool:
+         """Check if two candidates are at same position"""
+         if candidate is None or reference is None:
+             return False
+
+         dx = candidate.position[0] - reference.position[0]
+         dy = candidate.position[1] - reference.position[1]
+         distance = np.sqrt(dx * dx + dy * dy)
+
+         return distance < self.config.position_tolerance_px
+
+     def _reset_tracking(self):
+EOF
+)
