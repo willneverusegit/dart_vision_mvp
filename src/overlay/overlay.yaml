@@ -1,0 +1,9 @@
+heatmap:
+  enabled: true
+  scale: 0.25
+  alpha: 0.35
+  stamp_radius_px: 6
+  decay_half_life_s: 0    # null to disable
+  polar:
+    enabled: true
+    cell_px: 14

@@ -25,6 +25,9 @@ from src.game.game import DemoGame, GameMode
 
 # Board mapping/overlays/config
 from src.board import BoardConfig, BoardMapper, Calibration, draw_ring_circles, draw_sector_labels
+from src.overlay.heatmap import HeatmapAccumulator
+from src.analytics.polar_heatmap import PolarHeatmap
+from src.analytics.stats_accumulator import StatsAccumulator
 
 
 # --- Project modules (kept) ---
@@ -175,6 +178,17 @@ class DartVisionApp:
         # Mini-Game
         self.game = DemoGame(mode=self.args.game if hasattr(self.args, "game") else GameMode.ATC)
         self.last_msg = ""  # HUD-Zeile für letzten Wurf
+
+        # --- Heatmap / Polar-Heatmap state ---
+        self.hm = None  # HeatmapAccumulator
+        self.ph = None  # PolarHeatmap
+        self.heatmap_enabled = False
+        self.polar_enabled = False
+        self.session_start = time.time()
+        self.session_id = str(int(self.session_start))
+        self.total_darts = 0
+        self.stats = StatsAccumulator()
+
 
     def _hough_refine_center(self, roi_bgr) -> bool:
         """
@@ -405,6 +419,8 @@ class DartVisionApp:
         logger.info("=" * 60)
         logger.info("DART VISION MVP — init (UnifiedCalibrator only)")
         logger.info("=" * 60)
+        logger.info(
+            "Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode, H=Heatmap, P=Polar")
 
         # 1) Explizit per CLI geladen?
         if self.args.load_yaml:
@@ -497,7 +513,28 @@ class DartVisionApp:
             logger.error("Camera start failed.")
             return False
 
-        logger.info("Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode")
+          # --- Heatmap config (optional) ---
+
+        try:
+            overlay_cfg_path = Path("src/overlay/overlay.yaml")
+            overlay_cfg = yaml.safe_load(open(overlay_cfg_path, "r", encoding="utf-8")) or {}
+            hcfg = (overlay_cfg or {}).get("heatmap", {}) or {}
+        except Exception:
+            hcfg = {}
+        self.heatmap_enabled = bool(hcfg.get("enabled", True))
+        self.polar_enabled = bool((hcfg.get("polar", {}) or {}).get("enabled", True))
+
+        # --- Heatmap init (ROI-size based, so no conversions needed) ---
+        if self.heatmap_enabled:
+            self.hm = HeatmapAccumulator(frame_size = (ROI_SIZE[0], ROI_SIZE[1]),
+                scale = float(hcfg.get("scale", 0.25)),
+                alpha = float(hcfg.get("alpha", 0.35)),
+                stamp_radius_px = int(hcfg.get("stamp_radius_px", 6)),
+                decay_half_life_s = hcfg.get("decay_half_life_s", 120),
+            )
+        if self.polar_enabled:
+            cell = int((hcfg.get("polar", {}) or {}).get("cell_px", 14))
+            self.ph = PolarHeatmap(cell_size=(cell, cell))
         return True
 
     # ----- Calibration UI (only UnifiedCalibrator) -----
@@ -936,8 +973,22 @@ class DartVisionApp:
                     self.last_msg = self.game.apply_points(pts, label)
                     if self.show_debug:
                         logger.info(f"[SCORE] {label} -> {pts} | {self.last_msg}")
+                    # stats update (ROI coordinates optional)
+                    self.stats.add(ring=ring, sector=sector, points=pts,cx = float(impact.position[0]), cy = float(
+                        impact.position[1]))
                 if self.show_debug:
                     logger.info(f"[DART #{self.total_darts}] pos={impact.position} conf={impact.confidence:.2f}")
+                    # --- Heatmaps update (ROI coordinates) ---
+                try:
+                    cx, cy = int(impact.position[0]), int(impact.position[1])
+                    if self.hm is not None:
+                        self.hm.add_hit(cx, cy, weight=1.0)
+                    if (self.ph is not None) and (self.board_mapper is not None):
+                        # ring/sector were computed above (label/pts)
+                        self.ph.add(ring, sector)
+                except Exception as _e:
+                    if self.show_debug:
+                        logger.debug(f"[HM] update skipped: {_e}")
         # 🟡 Auto-Hough alignment (alle 10 Frames, nur im ALIGN-Modus)
         if self.overlay_mode == OVERLAY_ALIGN and self.align_auto and (self.frame_count % 10 == 0):
              self._hough_refine_center(roi_frame)
@@ -991,6 +1042,12 @@ class DartVisionApp:
                             (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 220), 1, cv2.LINE_AA)
             # --- ALIGN-Modus: dicke Doppel-/Triple-Kreise + optional Auto-Hough ---
             if self.overlay_mode == OVERLAY_ALIGN:
+                # --- Heatmap overlay (ROI panel) ---
+                if self.hm is not None and self.heatmap_enabled:
+                    disp_roi = self.hm.render_overlay(disp_roi, roi_mask=None)
+                # --- Polar mini-panel (top-left of ROI) -
+                if self.ph is not None and self.polar_enabled:
+                    disp_roi = self.ph.overlay_panel(disp_roi, pos=(10, 110))
                 if self.board_cfg is None:
                     cv2.putText(disp_roi, "ALIGN (no board cfg)", (ROI_SIZE[0] - 240, 24),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
@@ -1197,7 +1254,12 @@ class DartVisionApp:
                     self.game.switch_mode(new_mode);
                     self.last_msg = ""
                     logger.info(f"[GAME] Switch to {self.game.mode}")
-
+                elif key == ord('H'):
+                    self.heatmap_enabled = not self.heatmap_enabled
+                    logger.info(f"[HEATMAP] image-space overlay -> {'ON' if self.heatmap_enabled else 'OFF'}")
+                elif key == ord('P'):
+                    self.polar_enabled = not self.polar_enabled
+                    logger.info(f"[HEATMAP] polar panel -> {'ON' if self.polar_enabled else 'OFF'}")
                 elif key == ord('R'):
                     self.overlay_center_dx = 0.0
                     self.overlay_center_dy = 0.0
@@ -1207,8 +1269,6 @@ class DartVisionApp:
                         self.board_mapper.calib.cy = float(ROI_CENTER[1])
                         self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius)
                     logger.info("[OVERLAY] reset center/scale")
-
-
                 elif key == ord('t'):
                     # einmalige automatische Ausrichtung via Hough
                     changed = self._hough_refine_center(roi_frame)
@@ -1220,16 +1280,13 @@ class DartVisionApp:
                                     f"scale={self.overlay_scale:.4f}")
                     else:
                         logger.info("[HOUGH] no update")
-
                 elif key == ord('z'):
                     self.align_auto = not self.align_auto
                     logger.info(f"[ALIGN] auto={'ON' if self.align_auto else 'OFF'} (mode must be ALIGN to run)")
-
                 elif key == ord('o'):
                     self.overlay_mode = (self.overlay_mode + 1) % 4  # jetzt 0..3
                     modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL", OVERLAY_ALIGN: "ALIGN"}
                     logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
-
                 elif key == ord('j'):  # left
                     self.overlay_center_dx -= 1.0;
                     self._sync_mapper()
@@ -1262,13 +1319,11 @@ class DartVisionApp:
 
                 if raw_key == 0xA0000 or raw_key == 0xA30000:
                     pass  # (nur als Beispiel: SHIFT-Flags, optional)
-
                 if key == ord('0'):
                     self.roi_tx = self.roi_ty = 0.0
                     self.roi_scale = 1.0
                     self.roi_rot_deg = 0.0
                     self._roi_adjust_dirty = True
-
                 elif raw_key in (VK_LEFT, OCV_LEFT) and (cv2.getWindowProperty("Dart Vision MVP", 0) == 0 or True):
                     self.roi_tx -= STEP_T;
                     self._roi_adjust_dirty = True
@@ -1281,7 +1336,6 @@ class DartVisionApp:
                 elif raw_key in (VK_DOWN, OCV_DOWN):
                     self.roi_ty += STEP_T;
                     self._roi_adjust_dirty = True
-
                 elif key == ord('+') or key == ord('='):
                     self.roi_scale *= STEP_S;
                     self._roi_adjust_dirty = True
@@ -1385,10 +1439,24 @@ class DartVisionApp:
         if self.camera:
             self.camera.stop()
         cv2.destroyAllWindows()
-        if self.profiler and len(self.profiler.timings) > 0:
-            logger.info(self.profiler.get_report())
-        dur = time.time() - self.session_start
-        logger.info(f"Duration: {dur:.1f}s | Frames: {self.frame_count}")
+        # --- Stats & heatmap exports ---
+        try:
+            os.makedirs("reports", exist_ok=True)
+            # session stats JSON + CSVs
+            self.stats.export_json(f"reports/session_{self.session_id}_summary.json")
+            self.stats.export_csv_dists(
+                ring_csv=f"reports/session_{self.session_id}_ring_dist.csv",
+                sector_csv=f"reports/session_{self.session_id}_sector_dist.csv",
+                matrix_csv=f"reports/session_{self.session_id}_ring_sector_matrix.csv",
+            )
+            # If your PolarHeatmap is active, export CSV/PNG too
+            if getattr(self, "ph", None) is not None:
+                self.ph.export_csv(f"reports/polar_heatmap_{self.session_id}.csv")
+                self.ph.export_png(f"reports/polar_heatmap_{self.session_id}.png")
+            if getattr(self, "hm", None) is not None:
+                self.hm.export_png(f"reports/heatmap_{self.session_id}.png")
+        except Exception as e:
+            logger.debug(f"[REPORT] export skipped: {e}")
 
 
 # ---------- CLI ----------
