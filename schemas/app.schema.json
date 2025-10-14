@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Smart-DARTS app.yaml",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "input": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "webcam": { "type": ["integer", "string"] },
+        "video":  { "type": "string" },
+        "resolution": {
+          "type": "object",
+          "properties": { "width": { "type": "integer", "minimum": 160 }, "height": { "type": "integer", "minimum": 120 } },
+          "required": ["width", "height"],
+          "additionalProperties": false
+        },
+        "fps_limit": { "type": "number", "minimum": 5, "maximum": 240 }
+      }
+    },
+    "features": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "demo_mode": { "type": "boolean" },
+        "experimental": { "type": "object", "additionalProperties": true }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "level": { "type": "string", "enum": ["DEBUG","INFO","WARN","ERROR"] },
+        "json":  { "type": "boolean" }
+      }
+    }
+  },
+  "required": ["version"]
+}

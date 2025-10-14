@@ -87,6 +87,64 @@ class DartDetectorConfig:
     # Motion mask pre-processing
     motion_mask_smoothing_kernel: int = 5  # 0 to disable, odd numbers recommended
 
+from dataclasses import replace
+
+DETECTOR_PRESETS = {
+        # finds more, toleranter, etwas mehr False Positives möglich
+        "aggressive": dict(
+            min_area=6, max_area=1600,
+            min_aspect_ratio=0.25, max_aspect_ratio=3.5,
+            min_solidity=0.08, max_solidity=0.98,
+            min_extent=0.04, max_extent=0.80,
+            min_edge_density=0.015, max_edge_density=0.40,
+            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.8,
+            edge_canny_threshold1=30, edge_canny_threshold2=90,
+            circularity_weight=0.30, solidity_weight=0.20,
+            extent_weight=0.15, edge_weight=0.20, aspect_ratio_weight=0.15,
+            confirmation_frames=2, position_tolerance_px=24,
+            cooldown_frames=25, cooldown_radius_px=45,
+            candidate_history_size=20, motion_mask_smoothing_kernel=7,
+        ),
+
+        # dein bisheriger „Allrounder“
+        "balanced": dict(
+            min_area=10, max_area=1000,
+            min_aspect_ratio=0.3, max_aspect_ratio=3.0,
+            min_solidity=0.10, max_solidity=0.95,
+            min_extent=0.05, max_extent=0.75,
+            min_edge_density=0.02, max_edge_density=0.35,
+            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.5,
+            edge_canny_threshold1=40, edge_canny_threshold2=120,
+            circularity_weight=0.35, solidity_weight=0.20,
+            extent_weight=0.15, edge_weight=0.15, aspect_ratio_weight=0.15,
+            confirmation_frames=3, position_tolerance_px=20,
+            cooldown_frames=30, cooldown_radius_px=50,
+            candidate_history_size=20, motion_mask_smoothing_kernel=5,
+        ),
+
+        # strenger, sehr robuste Treffer, weniger False Positives
+        "stable": dict(
+            min_area=14, max_area=900,
+            min_aspect_ratio=0.35, max_aspect_ratio=2.6,
+            min_solidity=0.12, max_solidity=0.92,
+            min_extent=0.06, max_extent=0.70,
+            min_edge_density=0.025, max_edge_density=0.30,
+            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.3,
+            edge_canny_threshold1=55, edge_canny_threshold2=165,
+            circularity_weight=0.35, solidity_weight=0.20,
+            extent_weight=0.15, edge_weight=0.10, aspect_ratio_weight=0.20,
+            confirmation_frames=4, position_tolerance_px=18,
+            cooldown_frames=40, cooldown_radius_px=55,
+            candidate_history_size=24, motion_mask_smoothing_kernel=7,
+        ),
+    }
+
+def apply_detector_preset(cfg: DartDetectorConfig, name: str) -> DartDetectorConfig:
+        name = (name or "").lower()
+        params = DETECTOR_PRESETS.get(name)
+        if not params:
+            return cfg
+        return replace(cfg, **params)
 
 class DartImpactDetector:
     """Dart impact detector with temporal confirmation and cooldown."""

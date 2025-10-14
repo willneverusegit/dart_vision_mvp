@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Smart-DARTS calib.yaml",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "board": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "center_x": { "type": "number" },
+        "center_y": { "type": "number" },
+        "rotation_deg": { "type": "number", "minimum": -360, "maximum": 360 },
+        "clockwise": { "type": "boolean" }
+      },
+      "required": ["center_x", "center_y"]
+    },
+    "radii_px": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "double_outer": { "type": "number", "exclusiveMinimum": 0 },
+        "double_inner": { "type": "number", "exclusiveMinimum": 0 },
+        "triple_outer": { "type": "number", "exclusiveMinimum": 0 },
+        "triple_inner": { "type": "number", "exclusiveMinimum": 0 },
+        "single_bull":  { "type": "number", "exclusiveMinimum": 0 },
+        "inner_bull":   { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "sector_order": {
+      "type": "array",
+      "minItems": 20,
+      "maxItems": 20,
+      "items": { "type": "integer", "minimum": 1, "maximum": 20 }
+    },
+    "homography": {
+      "type": "object",
+      "properties": {
+        "H": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": { "type": "number" }
+          }
+        }
+      },
+      "required": ["H"],
+      "additionalProperties": true
+    },
+    "roi": {
+      "type": "object",
+      "properties": {
+        "x": { "type": "integer", "minimum": 0 },
+        "y": { "type": "integer", "minimum": 0 },
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 }
+      },
+      "required": ["x","y","w","h"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["version", "board"]
+}

@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Smart-DARTS overlay.yaml",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "version": { "type": "string" },
+    "draw": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "rings": { "type": "boolean" },
+        "sectors": { "type": "boolean" },
+        "labels": { "type": "boolean" },
+        "thickness": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    },
+    "colors": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "primary":   { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 },
+        "secondary": { "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 255 }, "minItems": 3, "maxItems": 3 }
+      }
+    },
+    "hud": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "show_fps": { "type": "boolean" },
+        "show_latency": { "type": "boolean" }
+      }
+    }
+  },
+  "required": ["version"]
+}

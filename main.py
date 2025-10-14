@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 from collections import deque
 from src.game.game import DemoGame, GameMode
+from src.vision.dart_impact_detector import apply_detector_preset
 
 
 # Board mapping/overlays/config
@@ -164,6 +165,7 @@ class DartVisionApp:
         self.overlay_center_dx: float = 0.0
         self.overlay_center_dy: float = 0.0
         self.align_auto: bool = False  # NEU: Hough-Autoausrichtung an/aus
+        self.show_help = False  # Hilfe-Overlay an/aus
 
         # ROI Fine-tune (wirken auf die Warphomographie)
         self.roi_tx = 0.0  # px (Ausgaberaum)
@@ -414,6 +416,56 @@ class DartVisionApp:
         self.roi.set_homography_from_matrix(Heff)
         self._roi_adjust_dirty = False
 
+    def _draw_help_overlay(self, img):
+        """
+        Zeichnet ein kompaktes Hilfe-Overlay unten rechts ins ROI-Bild (img).
+        Nutzt lokales ROI-Blending – sicher & unabhängig vom Backend.
+        """
+        pad = 10
+        lines = [
+            "Help / Controls",
+            "1/2/3: Preset Agg/Bal/Stable",
+            "o: Overlay (MIN/RINGS/FULL/ALIGN)",
+            "t: Hough once   z: Auto-Hough",
+            "Arrows: rot/scale overlay",
+            "X: Save overlay offsets",
+            "c: Recalibrate   s: Screenshot",
+            "g: Game reset    h: Switch game",
+            "?: Toggle help",
+        ]
+
+        # Kastenmaße
+        w = 310
+        h = 22 * len(lines) + 2 * pad
+        H, W = img.shape[:2]
+        x = max(0, W - w - pad)
+        y = max(0, H - h - pad)
+
+        # ROI ausschneiden
+        roi = img[y:y + h, x:x + w]
+        if roi.size == 0:
+            return  # falls zu knapp
+
+        # halbtransparenten Hintergrund vorbereiten
+        bg = roi.copy()
+        cv2.rectangle(bg, (0, 0), (w, h), (20, 20, 20), -1)
+
+        # Alpha-Blending NUR in diesem Kasten (kein Inplace-Parameter)
+        blended = cv2.addWeighted(bg, 0.6, roi, 0.4, 0.0)
+        roi[:] = blended  # zurückschreiben
+
+        # Text auf das (nun) eingefärbte ROI zeichnen
+        ytxt = pad + 18
+        cv2.putText(roi, lines[0], (pad, ytxt),
+                    cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+        ytxt += 10
+        for ln in lines[1:]:
+            ytxt += 18
+            cv2.putText(roi, ln, (pad, ytxt),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
+
+        # DEBUG: sichtbar machen, falls Text unsichtbar wäre
+        # cv2.rectangle(roi, (0,0), (w-1,h-1), (0,0,255), 1)
     # ----- Setup -----
     def setup(self) -> bool:
         logger.info("=" * 60)
@@ -495,6 +547,14 @@ class DartVisionApp:
             motion_pixel_threshold=self.args.motion_pixels,
             detect_shadows=True
         ))
+        base_cfg = DartDetectorConfig(
+            confirmation_frames=self.args.confirmation_frames,
+            position_tolerance_px=20,
+            min_area=10, max_area=1000,  # werden vom Preset überschrieben
+        )
+        det_cfg = apply_detector_preset(base_cfg, self.args.detector_preset)
+        self.dart = DartImpactDetector(det_cfg)
+        self.current_preset = self.args.detector_preset  # für HUD
         self.dart = DartImpactDetector(DartDetectorConfig(
             confirmation_frames=self.args.confirmation_frames,
             position_tolerance_px=10,
@@ -1151,6 +1211,11 @@ class DartVisionApp:
             cv2.putText(disp_roi, f"Time: {stats.frame_time_ms:.1f}ms", (10,60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
             cv2.putText(disp_roi, f"Darts: {self.total_darts}", (10,90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
 
+        if not self.show_help:
+            cv2.putText(disp_roi, f"Preset: {getattr(self, 'current_preset', 'balanced')}",
+                        (ROI_SIZE[0] - 180, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
+        if getattr(self, "show_help", False):
+            self._draw_help_overlay(disp_roi)
 
         canvas = np.zeros((600, 1200, 3), dtype=np.uint8)
         canvas[0:600, 0:800] = disp_main
@@ -1229,6 +1294,18 @@ class DartVisionApp:
                 # 4) ASCII-Tasten (auf 'key' prüfen)
                 if key == ord('q'):
                     self.running = False
+                elif key == ord('1'):
+                    self.dart.config = apply_detector_preset(self.dart.config, "aggressive")
+                    self.current_preset = "aggressive"
+                    logger.info("[PRESET] detector -> aggressive")
+                elif key == ord('2'):
+                    self.dart.config = apply_detector_preset(self.dart.config, "balanced")
+                    self.current_preset = "balanced"
+                    logger.info("[PRESET] detector -> balanced")
+                elif key == ord('3'):
+                    self.dart.config = apply_detector_preset(self.dart.config, "stable")
+                    self.current_preset = "stable"
+                    logger.info("[PRESET] detector -> stable")
                 elif key == ord('p'):
                     self.paused = not self.paused
                 elif key == ord('d'):
@@ -1260,6 +1337,10 @@ class DartVisionApp:
                 elif key == ord('P'):
                     self.polar_enabled = not self.polar_enabled
                     logger.info(f"[HEATMAP] polar panel -> {'ON' if self.polar_enabled else 'OFF'}")
+                elif key ==ord('?'):  # Shift+/, oder H als Alternative
+                    self.show_help = not self.show_help
+                    logger.info(f"[HELP] overlay -> {'ON' if self.show_help else 'OFF'}")
+
                 elif key == ord('R'):
                     self.overlay_center_dx = 0.0
                     self.overlay_center_dy = 0.0
@@ -1494,6 +1575,8 @@ def main():
     p.add_argument("--load-yaml", type=str, default=None, help="Load calibration YAML on startup")
     p.add_argument("--clahe", action="store_true",
                    help="Enable CLAHE on grayscale for HUD/detection")
+    p.add_argument("--detector-preset", type=str, choices=["aggressive", "balanced", "stable"],
+                   default="balanced", help="Dart detector preset")
 
     args = p.parse_args()
     DartVisionApp(args).run()

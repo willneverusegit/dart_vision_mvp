@@ -17,5 +17,5 @@ __all__ = [
     'DartDetectorConfig',
     'DartImpact',
     'FieldMapper',
-    'FieldMapperConfig'
+    'FieldMapperConfig',
 ]

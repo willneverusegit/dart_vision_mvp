@@ -88,18 +88,18 @@ class PolarHeatmap:
     def export_png(self, path: str) -> None:
         cv2.imwrite(path, self.panel())
 
-        # add to class PolarHeatmap:
-        def export_csv(self, path: str) -> None:
-            import csv, os
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            full = np.zeros((len(RINGS), 20), dtype=np.float32)
-            full[:4, :] = self.grid[:4, :]
-            full[4, :] = self.bulls[0]
-            full[5, :] = self.bulls[1]
-            full[6, :] = self.miss
-            with open(path, "w", encoding="utf-8", newline="") as f:
-                w = csv.writer(f)
-                w.writerow(["row\\col"] + [str(i + 1) for i in range(20)])
-                rows = RING_DISPLAY
-                for i, name in enumerate(rows):
-                    w.writerow([name] + full[i, :].astype(int).tolist())
+    # add to class PolarHeatmap:
+    def export_csv(self, path: str) -> None:
+        import csv, os
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        full = np.zeros((len(RINGS), 20), dtype=np.float32)
+        full[:4, :] = self.grid[:4, :]
+        full[4, :] = self.bulls[0]
+        full[5, :] = self.bulls[1]
+        full[6, :] = self.miss
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["row\\col"] + [str(i + 1) for i in range(20)])
+            rows = RING_DISPLAY
+            for i, name in enumerate(rows):
+                w.writerow([name] + full[i, :].astype(int).tolist())
