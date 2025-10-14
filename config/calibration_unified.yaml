@@ -23,7 +23,8 @@ image_size:
 - 1920
 - 1080
 overlay_adjust:
-  rotation_deg: -6.5
-  scale: 1.2
-  center_dx_px: 3.0
-  center_dy_px: 0.0
+  rotation_deg: 10.5
+  scale: 1.0032207770292902
+  center_dx_px: 5.0
+  center_dy_px: -2.0
+  r_outer_double_px: 160.51532432468645

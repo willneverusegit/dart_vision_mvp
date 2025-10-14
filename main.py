@@ -84,6 +84,7 @@ logger = logging.getLogger("main")
 OVERLAY_MIN   = 0  # nur Treffer & Game-HUD (präsentationstauglich)
 OVERLAY_RINGS = 1  # Ringe + ROI-Kreis
 OVERLAY_FULL  = 2  # Voll: Ringe + Sektoren + technische HUDs
+OVERLAY_ALIGN = 3   # NEU: Ausrichtmodus
 
 # Extended key codes (work with cv2.waitKeyEx on Windows)
 VK_LEFT  = 0x250000
@@ -149,12 +150,13 @@ class DartVisionApp:
         self.board_cfg: Optional[BoardConfig] = None
         self.board_mapper: Optional[BoardMapper] = None
         # Overlay-Mode (0=min, 1=rings, 2=full)
-        self.overlay_mode = OVERLAY_FULL
+        self.overlay_mode = OVERLAY_ALIGN
         # Overlay fine-tune (applied only to BoardMapper projection)
         self.overlay_rot_deg: float = 0.0  # add to Calibration.rotation_deg
         self.overlay_scale: float = 1.0  # multiplies roi_board_radius
         self.overlay_center_dx: float = 0.0
         self.overlay_center_dy: float = 0.0
+        self.align_auto: bool = False  # NEU: Hough-Autoausrichtung an/aus
 
         # Mini-Game
         self.game = DemoGame(mode=self.args.game if hasattr(self.args, "game") else GameMode.ATC)
@@ -304,6 +306,13 @@ class DartVisionApp:
         cv2.rectangle(img, (X, y), (X + w, y + h), col[s_all], -1)
         cv2.rectangle(img, (X, y), (X + w, y + h), (20, 20, 20), 1)
 
+    def _sync_mapper(self):
+        if self.board_mapper:
+            self.board_mapper.calib.cx = float(ROI_CENTER[0] + self.overlay_center_dx)
+            self.board_mapper.calib.cy = float(ROI_CENTER[1] + self.overlay_center_dy)
+            self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(self.overlay_scale)
+            self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
+
     # ----- Setup -----
     def setup(self) -> bool:
         logger.info("=" * 60)
@@ -363,10 +372,11 @@ class DartVisionApp:
                 Calibration(
                     cx=float(ROI_CENTER[0] + self.overlay_center_dx),
                     cy=float(ROI_CENTER[1] + self.overlay_center_dy),
-                    r_outer_double_px=float(self.roi_board_radius) * float(getattr(self, "overlay_scale", 1.0)),
-                    rotation_deg=float(getattr(self, "overlay_rot_deg", 0.0)),
+                    r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
+                    rotation_deg=float(self.overlay_rot_deg),
                 ),
             )
+
             logger.info(f"[BOARD] Mapper init | rot={getattr(self, 'overlay_rot_deg', 0.0):.2f}°, "
                         f"scale={getattr(self, 'overlay_scale', 1.0):.4f}, roiR={self.roi_board_radius:.1f}px")
         else:
@@ -695,12 +705,14 @@ class DartVisionApp:
             self.logger.info("[LOAD] Applied ChArUco intrinsics from YAML.")
             # Optional: overlay_adjust
             ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov:
-                self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:
-                self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])
+            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
+            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
+            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
+            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
+            abs_r = ov.get("r_outer_double_px")
+            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
+                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
 
         elif t == "aruco_quad":
             H = (data.get("homography") or {}).get("H")
@@ -711,12 +723,14 @@ class DartVisionApp:
             self.logger.info("[LOAD] Applied ArUco-Quad homography from YAML.")
             # Optional: overlay_adjust
             ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov:
-                self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:
-                self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])
+            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
+            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
+            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
+            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
+            abs_r = ov.get("r_outer_double_px")
+            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
+                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
 
         elif t == "homography_only":
             H = (data.get("homography") or {}).get("H")
@@ -727,12 +741,14 @@ class DartVisionApp:
             self.logger.info("[LOAD] Applied Homography-only from YAML.")
             # Optional: overlay_adjust
             ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov:
-                self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:
-                self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])
+            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
+            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
+            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
+            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
+            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
+            abs_r = ov.get("r_outer_double_px")
+            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
+                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
 
         else:
             self.logger.warning("[LOAD] Unknown or missing type in YAML.")
@@ -770,13 +786,13 @@ class DartVisionApp:
         if cfg.get("dist_coeffs") is not None:
             self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
         ov = (cfg or {}).get("overlay_adjust") or {}
-        if "rotation_deg" in ov:
-            self.overlay_rot_deg = float(ov["rotation_deg"])
-        if "scale" in ov:
-            self.overlay_scale = float(ov["scale"])
+        if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
+        if "scale" in ov:        self.overlay_scale = float(ov["scale"])
         if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])
         if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])
-
+        abs_r = ov.get("r_outer_double_px")
+        if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
+            self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
 
     # ----- Pipeline -----
     def process_frame(self, frame):
@@ -848,15 +864,57 @@ class DartVisionApp:
             if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
                 disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
                 disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
+                cv2.putText(disp_roi,
+                            f"cx:{ROI_CENTER[0] + self.overlay_center_dx:.1f} cy:{ROI_CENTER[1] + self.overlay_center_dy:.1f}",
+                            (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 220), 1, cv2.LINE_AA)
+            # --- ALIGN-Modus: dicke Doppel-/Triple-Kreise + optional Auto-Hough ---
+            if self.overlay_mode == OVERLAY_ALIGN:
+                if self.board_cfg is None:
+                    cv2.putText(disp_roi, "ALIGN (no board cfg)", (ROI_SIZE[0] - 240, 24),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
+                    # Zur Not nur den ROI-Kreis zeichnen:
+                    r = int(self.roi_board_radius * self.overlay_scale)
+                    cv2.circle(disp_roi, (ROI_CENTER[0], ROI_CENTER[1]), r, (0, 255, 0), 2, cv2.LINE_AA)
+                # Guideline-Kreise auf ROI
+                r_base = int(self.roi_board_radius * self.overlay_scale)
+                r_double_outer = r_base
+                r_double_inner = int(r_base * self.board_cfg.radii.r_double_inner)
+                r_triple_outer = int(r_base * self.board_cfg.radii.r_triple_outer)
+                r_triple_inner = int(r_base * self.board_cfg.radii.r_triple_inner)
+                r_outer_bull = int(r_base * self.board_cfg.radii.r_bull_outer)
+                r_inner_bull = int(r_base * self.board_cfg.radii.r_bull_inner)
+                cx = int(ROI_CENTER[0] + self.overlay_center_dx)
+                cy = int(ROI_CENTER[1] + self.overlay_center_dy)
+                # dicke Linien für Ausrichtung
+                for rr, col, th in (
+                        (r_double_outer, (0, 255, 0), 3),
+                        (r_double_inner, (0, 255, 0), 3),
+                        (r_triple_outer, (0, 200, 255), 2),
+                        (r_triple_inner, (0, 200, 255), 2),
+                        (r_outer_bull, (255, 200, 0), 2),
+                        (r_inner_bull, (255, 200, 0), 2),
+                ):
+                    cv2.circle(disp_roi, (cx, cy), max(rr, 1), col, th, cv2.LINE_AA)
+
+                # Auto-Hough im ALIGN-Modus (z. B. alle 10 Frames)
+                if self.align_auto and (self.frame_count % 10 == 0):
+                    _ = self._hough_refine_center(roi_frame)
+                # HUD rechts oben
+                cv2.putText(disp_roi, "ALIGN", (ROI_SIZE[0] - 180, 24),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(disp_roi, f"auto:{'ON' if self.align_auto else 'OFF'}",
+                            (ROI_SIZE[0] - 180, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
+                cv2.putText(disp_roi, f"cx:{cx} cy:{cy} rpx:{r_base}",
+                            (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
+                cv2.putText(disp_roi, "Keys: t=Hough once, z=Auto Hough",
+                            (ROI_SIZE[0] - 290, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         # --- Ein zentraler Overlay/HUD-Block oben rechts (kein Duplikat) ---
-        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
+        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL", OVERLAY_ALIGN:  "ALIGN "}
         cv2.putText(disp_roi, f"Overlay: {modes[self.overlay_mode]}",
                     (ROI_SIZE[0] - 180, 24),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
-        cv2.putText(disp_roi,
-                    f"cx:{ROI_CENTER[0] + self.overlay_center_dx:.1f} cy:{ROI_CENTER[1] + self.overlay_center_dy:.1f}",
-                    (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 220), 1, cv2.LINE_AA)
+
         # Zeige rot/scale nur, wenn BoardMapper aktiv ist
         if self.board_mapper is not None:
             cv2.putText(disp_roi, f"rot:{self.overlay_rot_deg:.1f}  scale:{self.overlay_scale:.3f}",
@@ -956,18 +1014,21 @@ class DartVisionApp:
                 # 3) Pfeiltasten (immer auf raw_key prüfen!)
                 if raw_key in (VK_LEFT, OCV_LEFT):
                     self.overlay_rot_deg -= 0.5
+                    self._sync_mapper()
                     if self.board_mapper:
                         self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
                     logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
 
                 elif raw_key in (VK_RIGHT, OCV_RIGHT):
                     self.overlay_rot_deg += 0.5
+                    self._sync_mapper()
                     if self.board_mapper:
                         self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
                     logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
 
                 elif raw_key in (VK_UP, OCV_UP):
                     self.overlay_scale = min(1.20, self.overlay_scale * 1.01)  # +1%
+                    self._sync_mapper()
                     if self.board_mapper:
                         self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
                             self.overlay_scale)
@@ -975,6 +1036,7 @@ class DartVisionApp:
 
                 elif raw_key in (VK_DOWN, OCV_DOWN):
                     self.overlay_scale = max(0.80, self.overlay_scale / 1.01)  # -1%
+                    self._sync_mapper()
                     if self.board_mapper:
                         self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
                             self.overlay_scale)
@@ -999,11 +1061,6 @@ class DartVisionApp:
                     logger.info(f"Saved {fn}")
                 elif key == ord('c'):
                     self._recalibrate_and_apply()
-                elif key == ord('o'):
-                    # Nur einmal belegen, nicht doppelt
-                    self.overlay_mode = (self.overlay_mode + 1) % 3
-                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL"}
-                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
                 elif key == ord('g'):
                     self.game.reset();
                     self.last_msg = ""
@@ -1017,6 +1074,7 @@ class DartVisionApp:
                 elif key == ord('t'):
                     # einmalige automatische Ausrichtung via Hough
                     changed = self._hough_refine_center(roi_frame)
+                    self._sync_mapper()
                     if changed:
                         logger.info("[HOUGH] overlay refined: "
                                     f"cx={ROI_CENTER[0] + self.overlay_center_dx:.1f}, "
@@ -1025,23 +1083,46 @@ class DartVisionApp:
                     else:
                         logger.info("[HOUGH] no update")
 
+                elif key == ord('z'):
+                    self.align_auto = not self.align_auto
+                    logger.info(f"[ALIGN] auto={'ON' if self.align_auto else 'OFF'} (mode must be ALIGN to run)")
+
+                elif key == ord('o'):
+                    self.overlay_mode = (self.overlay_mode + 1) % 4  # jetzt 0..3
+                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL", OVERLAY_ALIGN: "ALIGN"}
+                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
+
+                elif key == ord('j'):  # left
+                    self.overlay_center_dx -= 1.0;
+                    self._sync_mapper()
+                elif key == ord('l'):  # right
+                    self.overlay_center_dx += 1.0;
+                    self._sync_mapper()
+                elif key == ord('i'):  # up
+                    self.overlay_center_dy -= 1.0;
+                    self._sync_mapper()
+                elif key == ord('k'):  # down (nur wenn du Screenshot auf 's' lassen willst -> nimm z.B. ';' statt 's')
+                    self.overlay_center_dy += 1.0;
+                    self._sync_mapper()
+
+
                 elif key == ord('x'):
-                    # Overlay-Offsets in YAML sichern (rot/scale + center_dx/dy)
                     try:
                         cfg = load_calibration_yaml(CALIB_YAML) or {}
                     except Exception:
                         cfg = {}
-
                     cfg.setdefault("overlay_adjust", {})
                     cfg["overlay_adjust"]["rotation_deg"] = float(self.overlay_rot_deg)
                     cfg["overlay_adjust"]["scale"] = float(self.overlay_scale)
-                    cfg["overlay_adjust"]["center_dx_px"] = float(self.overlay_center_dx)
-                    cfg["overlay_adjust"]["center_dy_px"] = float(self.overlay_center_dy)
-
+                    cfg["overlay_adjust"]["center_dx_px"] = float(self.overlay_center_dx)  # NEU
+                    cfg["overlay_adjust"]["center_dy_px"] = float(self.overlay_center_dy)  # NEU
+                    # Zusätzlich absoluter, bereits skalierter Doppelaußenradius:
+                    cfg["overlay_adjust"]["r_outer_double_px"] = float(self.roi_board_radius) * float(
+                        self.overlay_scale)  # NEU
                     save_calibration_yaml(CALIB_YAML, cfg)
-                    logger.info(f"[OVERLAY] saved offsets to {CALIB_YAML} "
-                                f"(rot={self.overlay_rot_deg:.2f}, scale={self.overlay_scale:.4f}, "
-                                f"dx={self.overlay_center_dx:.1f}, dy={self.overlay_center_dy:.1f})")
+                    logger.info(f"[OVERLAY] saved to {CALIB_YAML} (rot={self.overlay_rot_deg:.2f}, "
+                                f"scale={self.overlay_scale:.4f}, dx={self.overlay_center_dx:.1f}, "
+                                f"dy={self.overlay_center_dy:.1f}, rpx={cfg['overlay_adjust']['r_outer_double_px']:.1f})")
 
 
         except KeyboardInterrupt:
