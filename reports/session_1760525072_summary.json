@@ -1,0 +1,40 @@
+{
+  "hits": 51,
+  "points_total": 623,
+  "points_per_hit": 12.215686274509803,
+  "hits_per_min": 36.4488451826869,
+  "miss_rate": 0.11764705882352941,
+  "best_streak": 14,
+  "last_label": "T5",
+  "ring_distribution": {
+    "single_inner": 4,
+    "triple": 16,
+    "single_outer": 19,
+    "double": 6,
+    "outer_bull": 0,
+    "inner_bull": 0,
+    "miss": 6
+  },
+  "sector_distribution": {
+    "1": 1,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 30,
+    "6": 0,
+    "7": 0,
+    "8": 0,
+    "9": 2,
+    "10": 0,
+    "11": 1,
+    "12": 5,
+    "13": 0,
+    "14": 2,
+    "15": 0,
+    "16": 1,
+    "17": 0,
+    "18": 1,
+    "19": 1,
+    "20": 1
+  }
+}

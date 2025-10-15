@@ -1,0 +1,40 @@
+{
+  "hits": 3,
+  "points_total": 0,
+  "points_per_hit": 0.0,
+  "hits_per_min": 0.5478946481661399,
+  "miss_rate": 1.0,
+  "best_streak": 0,
+  "last_label": "M",
+  "ring_distribution": {
+    "single_inner": 0,
+    "triple": 0,
+    "single_outer": 0,
+    "double": 0,
+    "outer_bull": 0,
+    "inner_bull": 0,
+    "miss": 3
+  },
+  "sector_distribution": {
+    "1": 0,
+    "2": 0,
+    "3": 0,
+    "4": 0,
+    "5": 0,
+    "6": 0,
+    "7": 0,
+    "8": 0,
+    "9": 0,
+    "10": 0,
+    "11": 0,
+    "12": 0,
+    "13": 0,
+    "14": 0,
+    "15": 0,
+    "16": 0,
+    "17": 0,
+    "18": 0,
+    "19": 0,
+    "20": 0
+  }
+}

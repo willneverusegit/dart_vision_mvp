@@ -1,0 +1,140 @@
+
+🔬 Parameter-Erklärung im Detail
+🎨 Shape constraints (Grundfilter)
+Parameter	Bedeutung	Physikalischer Einfluss
+min_area / max_area	minimale und maximale Pixel-Fläche der Kontur	Verhindert, dass winzige Rauschpunkte oder ganze Handbewegungen als Pfeil gelten. Bei 1080p ≈ 10–1000 px² ist typisch. Wenn dein Pfeil weiter entfernt ist, erhöhe max_area (z. B. 1500–2000).
+min_aspect_ratio / max_aspect_ratio	Verhältnis Breite/Höhe der Bounding-Box	Ein Dart hat meist eine längliche Silhouette, etwa 1:3–1:5, wenn man ihn seitlich sieht. Zu niedriger Wert → zu rund; zu hoher → zu langer Strich (z. B. Schatten). Bei dir ideal: 0.3–3.0.Sehr gute Frage — das ist genau der Kern, um zu verstehen, **warum dein Dart-Impact-System „zu viel“ oder „zu wenig“ erkennt** 🎯
+
+Ich erklär dir jeden Parameter **nicht nur wörtlich**, sondern **mit physischem Bezug** auf das, was im Frame passiert — also, *wie OpenCV durch die Maske und Konturen letztlich „Pfeile“ erkennt.*
+
+---
+
+## 🧩 Kontext
+
+Der `DartImpactDetector` arbeitet typischerweise so:
+
+1. Er bekommt eine **Motion Mask** (Differenz oder MOG2-Ausgabe).
+2. Findet darin **Konturen (cv2.findContours)**.
+3. Berechnet pro Kontur geometrische Kennwerte wie:
+
+   * Fläche, Umfang → `area`, `perimeter`
+   * Begrenzungsrechteck → `aspect_ratio`
+   * Konvexität → `solidity`
+   * Bounding Box / Fläche → `extent`
+   * Kantenanteil → `edge_density`
+4. Filtert mit diesen Parametern, bewertet Kandidaten, und meldet einen Treffer, wenn mehrere Frames hintereinander konsistent dasselbe Objekt zeigen (→ `confirmation_frames`).
+
+---
+
+## 🔬 Parameter-Erklärung im Detail
+
+### 🎨 **Shape constraints (Grundfilter)**
+
+| Parameter                               | Bedeutung                                     | Physikalischer Einfluss                                                                                                                                                                                |
+| --------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `min_area` / `max_area`                 | minimale und maximale Pixel-Fläche der Kontur | Verhindert, dass winzige Rauschpunkte oder ganze Handbewegungen als Pfeil gelten.  Bei 1080p ≈ 10–1000 px² ist typisch.  Wenn dein Pfeil weiter entfernt ist, **erhöhe** `max_area` (z. B. 1500–2000). |
+| `min_aspect_ratio` / `max_aspect_ratio` | Verhältnis Breite/Höhe der Bounding-Box       | Ein Dart hat meist eine längliche Silhouette, etwa 1:3–1:5, wenn man ihn seitlich sieht.  Zu niedriger Wert → zu rund; zu hoher → zu langer Strich (z. B. Schatten).  Bei dir ideal: 0.3–3.0.          |
+
+👉 Diese Filter greifen **ganz am Anfang**: nur was zwischen diesen Grenzen liegt, wird überhaupt weiter bewertet.
+
+---
+
+### 🧮 **Advanced shape heuristics**
+
+| Parameter                               | Beschreibung                                        | Wirkung                                                                                                                              |
+| --------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `min_solidity` / `max_solidity`         | Verhältnis **(Konturfläche / konvexe Hülle)**       | „Wie geschlossen“ ist die Form? Ein echter Pfeil hat Lücken (Schaft + Spitze), daher 0.1–0.95 erlaubt ein bisschen Unregelmäßigkeit. |
+| `min_extent` / `max_extent`             | Verhältnis **(Konturfläche / Bounding-Box-Fläche)** | Ein Maß für „Füllgrad“. Eine kompakte Form (z. B. Dartkopf) hat hohen Extent, ein schlanker Pfeil niedrigen.                         |
+| `min_edge_density` / `max_edge_density` | Prozentsatz von Kantenpixeln im ROI (aus Canny).    | Zu niedrige Werte = glatte Flächen (Hintergrund), zu hohe = stark texturierte Bereiche (z. B. Board).  Typisch: 0.02–0.35.           |
+| `preferred_aspect_ratio`                | Erwartetes Verhältnis Breite/Höhe eines Pfeils      | z. B. 0.35 bedeutet: Objekt etwa 3× so lang wie breit. Wird zur „Score“-Berechnung herangezogen.                                     |
+| `aspect_ratio_tolerance`                | Wie tolerant das System gegenüber Abweichungen ist  | Bei 1.5 werden Formabweichungen ±50 % noch akzeptiert. Höher = tolerant, aber fehleranfälliger.                                      |
+
+👉 Diese Gruppe bestimmt, **wie „dart-artig“ eine Form aussieht.**
+Wenn du viele Fehlalarme (z. B. Board-Texturen oder Schatten) bekommst → enger machen.
+Wenn er keine Pfeile mehr findet → toleranter (Werte erhöhen).
+
+---
+
+### ⚡ **Edge detection**
+
+| Parameter                                        | Beschreibung                 | Wirkung                                                                                                                                                                                    |
+| ------------------------------------------------ | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `edge_canny_threshold1`, `edge_canny_threshold2` | Schwellwerte für `cv2.Canny` | Zu niedrig → zu viele falsche Kanten, zu hoch → keine erkennbaren Pfeile.  Wenn du hell beleuchtet filmst, erhöhe beide (z. B. 60/180).  Wenn du wenig Kontrast hast, senke (z. B. 30/90). |
+
+👉 Der „Edge-Density“-Wert basiert auf dieser Canny-Kante. Also direkt relevant.
+
+---
+
+### 🎯 **Confidence weighting**
+
+| Parameter             | Beschreibung                                 | Wirkung                                                        |
+| --------------------- | -------------------------------------------- | -------------------------------------------------------------- |
+| `circularity_weight`  | Wie wichtig ist „rund sein“ (z. B. Dartkopf) | 0.35 → moderat wichtig; zu hoch = erkennt eher runde Objekte.  |
+| `solidity_weight`     | Gewicht für „geschlossenheit“                | 0.2 → glatte vs. zerfranste Formen.                            |
+| `extent_weight`       | Gewicht für Füllgrad                         | 0.15 → kontrolliert, wie dicht das Objekt in seiner Box liegt. |
+| `edge_weight`         | Gewicht für Kantenanteil                     | 0.15 → bevorzugt Objekte mit sauberem Umriss.                  |
+| `aspect_ratio_weight` | Gewicht für Seitenverhältnis                 | 0.15 → stärkt typische Dart-Silhouetten.                       |
+
+👉 Der Detektor kombiniert diese Werte zu einem **Score zwischen 0–1** und akzeptiert Kandidaten mit `score > threshold` (implizit in deinem Code).
+Du kannst damit das **„Profil“ des Dart-Treffers** anpassen:
+
+* Länglicher Dart → erhöhe `aspect_ratio_weight`
+* Deutlicher Rand → erhöhe `edge_weight`
+* Runde Spitze → erhöhe `circularity_weight`
+
+---
+
+### ⏱️ **Temporal confirmation**
+
+| Parameter               | Beschreibung                                                        | Wirkung                                                                                                                              |
+| ----------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `confirmation_frames`   | wie viele aufeinanderfolgende Frames dieselbe Position haben müssen | Dämpft Rauschen → stabilere Erkennung, aber mehr Latenz.  Bei 3 Frames ≈ 0.1 s bei 30 fps.                                           |
+| `position_tolerance_px` | erlaubte Bewegung pro Frame                                         | Bei 20 px ist ein leichter Sprung erlaubt. Zu klein → Erkennung bricht ab bei kleinsten Bewegungen; zu groß → Rauschen addiert sich. |
+
+👉 Das ist dein **„Anti-Flacker-System“**: verhindert, dass ein Wackeln sofort als neuer Treffer gilt.
+
+---
+
+### 🧊 **Cooldown (neu, wichtig)**
+
+| Parameter            | Beschreibung                                                                  | Wirkung                                                                                            |
+| -------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `cooldown_frames`    | Wie lange nach einem Treffer die Umgebung ignoriert wird                      | Verhindert Doppel-Erkennungen, wenn der Pfeil noch im Flug sichtbar ist. Typisch: 30 Frames ≈ 1 s. |
+| `cooldown_radius_px` | Radius um letzte Trefferposition, in dem während Cooldown nichts erkannt wird | Verhindert mehrfaches Zählen desselben Pfeils. Typisch: 30–60 px.                                  |
+
+---
+
+### 📜 **History & Motion mask**
+
+| Parameter                      | Beschreibung                                | Wirkung                                                                                                                                                                                |
+| ------------------------------ | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `candidate_history_size`       | Wie viele Kandidaten gespeichert werden     | Dient zur Glättung und Wiedererkennung. Größer = stabiler, aber träger.                                                                                                                |
+| `motion_mask_smoothing_kernel` | Größe des Glättungsfilters (z. B. 5 × 5 px) | Entfernt kleine Lücken in der Bewegungsmaske.  Wenn du viel Rauschen hast (z. B. LED-Flimmern), **erhöhe** auf 7 oder 9.  Wenn du schnelle, kleine Darts hast, **senke** auf 3 oder 0. |
+
+---
+
+## 🧠 Zusammengefasst
+
+| Gruppe                  | Was sie steuert      | Primäre Effekte                                   |
+| ----------------------- | -------------------- | ------------------------------------------------- |
+| **Shape constraints**   | absolute Filterung   | entscheidet, ob überhaupt weiter geprüft wird     |
+| **Advanced heuristics** | Form-„DNA“ des Darts | Feintuning zwischen echten Pfeilen und Artefakten |
+| **Edge detection**      | Kantensensitivität   | beeinflusst Edge-Density-Maß direkt               |
+| **Confidence weights**  | Kombination zu Score | Balance der Einflussfaktoren                      |
+| **Temporal**            | Stabilität über Zeit | verhindert Flackern                               |
+| **Cooldown**            | Anti-Doppel-Trigger  | unterdrückt Mehrfachzählungen                     |
+| **Mask smoothing**      | Rauschfilter         | glättet Bewegungsmaske vor Konturerkennung        |
+
+---
+
+## 🧭 Praxis-Tuning-Tipps
+
+| Ziel                        | Änderung                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| erkennt nichts → zu streng  | `min_area ↓`, `max_area ↑`, `min_solidity ↓`, `confirmation_frames ↓`            |
+| viele Fehlalarme            | `min_extent ↑`, `max_extent ↓`, `edge_canny_threshold1/2 ↑`, `cooldown_frames ↑` |
+| Doppelzählungen             | `cooldown_radius_px ↑`, `confirmation_frames ↑`                                  |
+| Pfeile nicht stabil erkannt | `position_tolerance_px ↑`, `candidate_history_size ↑`                            |
+| zu empfindlich auf Licht    | `motion_mask_smoothing_kernel ↑`, `edge_thresholds ↑`                            |
+
+---
