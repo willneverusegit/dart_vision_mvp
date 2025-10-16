@@ -17,10 +17,7 @@ def draw_sector_labels(img: np.ndarray, mapper: BoardMapper, step_deg: float = 1
         theta_center = (i * step_deg)
         # Re-apply inverse of mapping to get screen angle
         # We construct a point on the circle at that relative angle
-        theta = theta_center
-        if mapper.cfg.angles.clockwise:
-            theta = (360.0 - theta) % 360.0
-        theta = (theta + mapper.cfg.angles.theta0_deg + mapper.calib.rotation_deg) % 360.0
+        theta = mapper.rel2screen(theta_center)
         rad = math.radians(theta)
         x = int(center[0] + r * math.cos(rad))
         y = int(center[1] - r * math.sin(rad))

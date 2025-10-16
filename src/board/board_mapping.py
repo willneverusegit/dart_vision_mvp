@@ -39,12 +39,20 @@ class BoardMapper:
         theta = (theta - self.calib.rotation_deg) % 360.0
 
         # Rebase to theta0
-        theta_rel = (theta - self.cfg.angles.theta0_deg) % 360.0 +9.0
+        theta_rel = (theta - self.cfg.angles.theta0_deg) % 360.0
 
         if self.cfg.angles.clockwise:
             theta_rel = (360.0 - theta_rel) % 360.0
 
         return r_norm, theta_rel
+
+    def rel2screen(self, theta_rel_deg: float) -> float:
+        """Inverse of cart2polar angle rebasing: relative->screen degrees."""
+        theta = theta_rel_deg
+        if self.cfg.angles.clockwise:
+            theta = (360.0 - theta) % 360.0
+        theta = (theta + self.cfg.angles.theta0_deg + self.calib.rotation_deg) % 360
+        return theta
 
     # --- ring classification ---
     def classify_ring(self, r_norm: float) -> str:

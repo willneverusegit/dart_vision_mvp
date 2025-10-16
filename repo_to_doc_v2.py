@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import io
 import os
 import re
 import sys
@@ -75,7 +76,7 @@ def read_text(path: Path, encoding: str = "utf-8") -> str:
     try:
         return path.read_text(encoding=encoding, errors="replace")
     except Exception as e:
-        return f"# <ERROR reading file: {e}>\n"
+        return f"# <ERROR reading file: {e}>\\n"
 
 def rel_module_from_path(root: Path, path: Path) -> str:
     rel = path.relative_to(root).with_suffix("")
@@ -91,7 +92,7 @@ def get_source_segment(content: str, lineno: int, end_lineno: int) -> str:
     lines = content.splitlines()
     start = max(1, lineno) - 1
     end = max(1, end_lineno)
-    return "\n".join(lines[start:end])
+    return "\\n".join(lines[start:end])
 
 def is_probably_testfile(path: Path) -> bool:
     name = path.name
@@ -444,11 +445,11 @@ def compute_reachable(model: RepoModel, entry_qns: Set[str]) -> Tuple[Set[str], 
     stack: List[str] = list(direct)
     while stack:
         qn = stack.pop()
-        if qn in seen:
+        if qn in seen: 
             continue
         seen.add(qn)
         d = model.defs.get(qn)
-        if not d:
+        if not d: 
             continue
         for tgt in d.calls:
             if tgt in model.defs and tgt not in seen:
@@ -513,14 +514,15 @@ def render_markdown(model: RepoModel, root: Path,
     dup_badge = html_badge("DUPLICATE", dup_color)
 
     lines: List[str] = []
-    lines.append("# ChatGPT Analysis Bundle (improved)\n")
-    lines.append(f"**Root:** `{root}`  \n")
-    lines.append("**Legend:** " + direct_badge + " = direct entry; "
+    lines.append(f"# ChatGPT Analysis Bundle (improved)\\n")
+    lines.append(f"**Root:** `{root}`  \\n")
+    lines.append("**Legend:** "
+                 + direct_badge + " = direct entry; "
                  + used_badge + " = reachable from entries; "
                  + unused_badge + " = not reached; "
-                 + dup_badge + " = duplicate per selected mode.\n")
+                 + dup_badge + " = duplicate per selected mode.\\n")
     if direct_entries:
-        lines.append("**Entries:** " + ", ".join(sorted(direct_entries)) + "\n")
+        lines.append("**Entries:** " + ", ".join(sorted(direct_entries)) + "\\n")
 
     edges: List[Tuple[str, str]] = []
     for d in model.defs.values():
@@ -534,14 +536,14 @@ def render_markdown(model: RepoModel, root: Path,
             break
 
     if edges:
-        lines.append("## Call Graph (approx., reachable subset)\n")
+        lines.append("## Call Graph (approx., reachable subset)\\n")
         lines.append("```mermaid")
         lines.append("flowchart LR")
         lines.append("classDef entry fill:#1565c0,stroke:#0d47a1,color:#fff;")
         lines.append("classDef used fill:#2e7d32,stroke:#1b5e20,color:#fff;")
         lines.append("classDef unused fill:#6d4c41,stroke:#3e2723,color:#fff;")
         def node_id(qn: str) -> str:
-            return re.sub(r"[^A-Za-z0-9_]", "_", qn)[:60]
+            return re.sub(r\"[^A-Za-z0-9_]\", \"_\", qn)[:60]
         nodes = set([a for a,b in edges] + [b for a,b in edges])
         for qn in nodes:
             nid = node_id(qn)
@@ -555,12 +557,12 @@ def render_markdown(model: RepoModel, root: Path,
         lines.append("```")
         lines.append("")
 
-    lines.append("## Files & Definitions\n")
+    lines.append("## Files & Definitions\\n")
     for fi in sorted(model.files.values(), key=lambda f: str(f.path).lower()):
         rel = fi.path.relative_to(root)
-        lines.append(f"### `{rel.as_posix()}`\n")
+        lines.append(f"### `{rel.as_posix()}`\\n")
         if fi.defs:
-            lines.append("**Definitions:**\n")
+            lines.append("**Definitions:**\\n")
             for d in sorted(fi.defs.values(), key=lambda d: (d.kind, d.lineno)):
                 badges = []
                 if d.qualname in direct_entries:
@@ -576,19 +578,19 @@ def render_markdown(model: RepoModel, root: Path,
         else:
             lines.append("_No definitions parsed._")
         lines.append("")
-        lines.append("<details><summary>Show file content</summary>\n\n")
+        lines.append("<details><summary>Show file content</summary>\\n\\n")
         lines.append("```python")
         lines.append(fi.content.rstrip())
         lines.append("```")
-        lines.append("\n</details>\n")
-    return "\n".join(lines)
+        lines.append("\\n</details>\\n")
+    return "\\n".join(lines)
 
 def main():
     ap = argparse.ArgumentParser(description="Export repository sources and a static call graph (improved) to a single Markdown bundle for ChatGPT analysis.")
     ap.add_argument("--root", type=Path, default=Path.cwd(), help="Repository root (default: current dir).")
     ap.add_argument("--entry", type=str, default="main.py", help="Entry file path relative to root (default: main.py).")
     ap.add_argument("--entry-func", action="append", default=[], help="Entry function name(s). Can be passed multiple times.")
-    ap.add_argument("--entry-qualname", action="append", default=[], help='Explicit entry qualname(s) like "pkg.mod:Class.method" or "pkg.mod:function".')
+    ap.add_argument("--entry-qualname", action="append", default=[], help='Explicit entry qualname(s) like \"pkg.mod:Class.method\" or \"pkg.mod:function\".')
     ap.add_argument("--output", type=Path, default=Path("chatgpt_repo_bundle.md"), help="Output Markdown path.")
     ap.add_argument("--include-tests", action="store_true", help="Include test files (default: False).")
     ap.add_argument("--encoding", type=str, default="utf-8", help="Read encoding (default: utf-8).")
