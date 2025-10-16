@@ -41,6 +41,8 @@ env/
 # Project specific
 test_videos/          # Video files können groß sein
 results/              # Analysis outputs
+reports/
+patches/
 analysis_results/
 *.mp4
 *.avi

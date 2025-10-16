@@ -22,6 +22,7 @@ from typing import Optional, Tuple, List
 from collections import deque
 from src.game.game import DemoGame, GameMode
 from src.vision.dart_impact_detector import apply_detector_preset
+from src.pipeline.frame_result import FrameResult
 
 
 # Board mapping/overlays/config
@@ -555,12 +556,6 @@ class DartVisionApp:
         det_cfg = apply_detector_preset(base_cfg, self.args.detector_preset)
         self.dart = DartImpactDetector(det_cfg)
         self.current_preset = self.args.detector_preset  # für HUD
-        self.dart = DartImpactDetector(DartDetectorConfig(
-            confirmation_frames=self.args.confirmation_frames,
-            position_tolerance_px=10,
-            min_area=10,
-            max_area=1000
-        ))
         self.mapper = FieldMapper(FieldMapperConfig())
         self.fps = FPSCounter(window_size=30)
 
