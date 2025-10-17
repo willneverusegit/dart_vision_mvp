@@ -1,3 +1,23 @@
+# Module: `main.py`
+Hash: `90933234d3d5` · LOC: 1 · Main guard: true
+
+## Imports
+- `argparse`\n- `cv2`\n- `json`\n- `logging`\n- `numpy`\n- `os`\n- `sys`\n- `time`\n- `yaml`
+
+## From-Imports
+- `from pathlib import Path`\n- `from typing import Optional, Tuple, List`\n- `from collections import deque`\n- `from src.game.game import DemoGame, GameMode`\n- `from src.vision.dart_impact_detector import apply_detector_preset`\n- `from src.pipeline.frame_result import FrameResult`\n- `from src.board import BoardConfig, BoardMapper, Calibration, draw_ring_circles, draw_sector_labels`\n- `from src.overlay.heatmap import HeatmapAccumulator`\n- `from src.analytics.polar_heatmap import PolarHeatmap`\n- `from src.analytics.stats_accumulator import StatsAccumulator`\n- `from src.capture import ThreadedCamera, CameraConfig, FPSCounter`\n- `from src.calibration.roi_processor import ROIProcessor, ROIConfig`\n- `from src.calibration.unified_calibrator import UnifiedCalibrator, CalibrationMethod`\n- `from src.vision import MotionDetector, MotionConfig, DartImpactDetector, DartDetectorConfig, FieldMapper, FieldMapperConfig`\n- `from src.utils.performance_profiler import PerformanceProfiler`\n- `from src.calibration.aruco_quad_calibrator import ArucoQuadCalibrator`\n- `from src.calibration.calib_io import save_calibration_yaml`\n- `from src.calibration.calib_io import load_calibration_yaml`\n- `from pathlib import Path`
+
+## Classes
+- `DartVisionApp` (L122)
+
+## Functions
+- `setup_logging()` (L51): Configure dual logging to console + file.\n- `__init__()` (L123)\n- `_hough_refine_center()` (L200): Findet den äußeren Doppelring als Kreis und passt Overlay-Center & Scale an.\n- `score()` (L237)\n- `_hud_compute()` (L278)\n- `_hud_color()` (L293)\n- `_hud_draw()` (L302)\n- `_overlay_center_radius()` (L308): Gibt (cx, cy, r_base) zurück: Center inkl. Offsets + skalierten Doppel-Außenradius.\n- `_points_from_mapping()` (L315): Rechnet BoardMapper-Ergebnis in Punkte um.\n- `_draw_traffic_light()` (L333)\n- `st_b()` (L334)\n- `st_f()` (L336)\n- `st_e()` (L338)\n- `_sync_mapper()` (L358)\n- `build_roi_adjust_matrix()` (L365): Baut eine 3x3 Homographie, die um das ROI-Zentrum herum skaliert/rotiert und\n- `_effective_H()` (L408)\n- `_apply_effective_H_if_dirty()` (L414)\n- `_draw_help_overlay()` (L424): Zeichnet ein kompaktes Hilfe-Overlay unten rechts ins ROI-Bild (img).\n- `setup()` (L475)\n- `_calibration_ui()` (L616)\n- `_metrics_for_hud()` (L676)\n- `on_mouse()` (L684)\n- `_apply_loaded_yaml()` (L892)\n- `_apply_loaded_calibration()` (L981): Backward/forward compatible loader:\n- `process_frame()` (L1024)\n- `create_visualization()` (L1072)\n- `run()` (L1241)\n- `_recalibrate_and_apply()` (L1489)\n- `cleanup()` (L1568)\n- `main()` (L1594)
+
+## Intra-module calls (heuristic)
+ArgumentParser, ArucoQuadCalibrator, BoardConfig, BoardMapper, Calibration, CameraConfig, Canny, DartDetectorConfig, DartImpactDetector, DartVisionApp, DemoGame, FPSCounter, FieldMapper, FieldMapperConfig, FileHandler, Formatter, HeatmapAccumulator, HoughCircles, Laplacian, MotionConfig, MotionDetector, Path, PerformanceProfiler, PolarHeatmap, ROIConfig, ROIProcessor, StatsAccumulator, StreamHandler, ThreadedCamera, UnifiedCalibrator, _apply_effective_H_if_dirty, _apply_loaded_calibration, _apply_loaded_yaml, _calibration_ui, _draw_help_overlay, _draw_traffic_light, _effective_H, _homography_and_metrics, _hough_refine_center, _hud_color, _hud_compute, _overlay_center_radius, _points_from_mapping, _recalibrate_and_apply, _sync_mapper, abs, add, addHandler, addWeighted, add_argument, add_hit, add_mutually_exclusive_group, all, append, apply, apply_detector_preset, apply_points, array, astype, bool, build_roi_adjust_matrix, calibrate_from_frame, circle, cleanup, clear, clear_impacts, copy, cos, createCLAHE, create_visualization, cvtColor, debug, deg2rad, deque, destroyAllWindows, destroyWindow, detect_charuco, detect_dart, detect_motion, drawDetectedMarkers, drawFrameAxes, draw_debug, draw_ring_circles, draw_sector_labels, enumerate, error, estimate_pose_charuco, exists, expanduser, export_csv, export_csv_dists, export_json, export_png, float, float32, get, getLevelName, getLogger, getWindowProperty, get_confirmed_impacts, get_stats, getattr, hasattr, imshow, imwrite, info, int, isfinite, isinstance, len, load_calibration_yaml, lower, main, makedirs, max, mean, medianBlur, min, namedWindow, open, ord, overlay_panel, parse_args, perf_counter, process_frame, putText, ravel, read, rectangle, render_overlay, reset, reshape, resize, resolve, round, run, safe_load, save_calibration_yaml, score_from_hit, selftest, set, setFormatter, setLevel, setMouseCallback, set_detector_params, set_homography_from_matrix, setdefault, setup, setup_logging, sin, sleep, sorted, split, st_b, st_e, st_f, start, startswith, stop, str, switch_mode, time, to_yaml_dict, tolist, tune_params_for_resolution, tuple, update, upper, var, waitKey, waitKeyEx, warning, warp_roi, zeros
+
+## Code
+```python
 """
 Dart Vision MVP — Main (UnifiedCalibrator only)
 CPU-optimized darts detection with unified ChArUco/AruCo/manual calibration.
@@ -1269,6 +1289,34 @@ class DartVisionApp:
                 if self.paused:
                     cv2.putText(disp, "PAUSED", (500, 50), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,165,255), 3)
 
+                # --- vor dem waitKeyEx: optional drosseln, wenn Video ---
+                if self.src_is_video and self.args.video_sync != "off":
+                    if self.args.video_sync == "fps":
+                        # einfache FPS-basierte Taktung
+                        period = (1.0 / max(self.src_fps, 1e-6)) / max(self.args.playback, 1e-6)
+                        now = time.perf_counter()
+                        if self._next_vsync is None:
+                            self._next_vsync = now + period
+                        else:
+                            sleep_s = self._next_vsync - now
+                            if sleep_s > 0:
+                                time.sleep(sleep_s)
+                            # robust gegen “nachhinken”: nicht mehr als 2 Perioden nachschieben
+                            self._next_vsync = max(self._next_vsync + period, now + period)
+                    else:  # "msec" -> nutze Dateizeitstempel
+                        try:
+                            pos_ms = float(self.camera.capture.get(cv2.CAP_PROP_POS_MSEC))
+                        except Exception:
+                            pos_ms = None
+                        if pos_ms is not None and pos_ms >= 0:
+                            if self._last_pos_msec is None:
+                                self._last_pos_msec = pos_ms
+                            dt_ms = max(0.0, pos_ms - self._last_pos_msec)
+                            self._last_pos_msec = pos_ms
+                            # gewünschte Wartezeit abzüglich grober Processing-Zeit (optional)
+                            target_s = (dt_ms / 1000.0) / max(self.args.playback, 1e-6)
+                            if target_s > 0:
+                                time.sleep(target_s)
 
                 # jetzt die Tasten abfragen (bei Video gerne ein paar ms Blockzeit nutzen)
                 wait_delay = 1
@@ -1610,3 +1658,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+```

@@ -1,3 +1,23 @@
+# Module: `src\capture\threaded_camera.py`
+Hash: `37825648afe0` · LOC: 1 · Main guard: false
+
+## Imports
+- `cv2`\n- `logging`\n- `numpy`\n- `queue`\n- `threading`\n- `time`
+
+## From-Imports
+- `from pathlib import Path`\n- `from typing import Optional, Tuple, Callable`\n- `from dataclasses import dataclass`
+
+## Classes
+- `CameraConfig` (L22): Camera configuration parameters\n- `ThreadedCamera` (L48): Non-blocking video capture using producer-consumer pattern.
+
+## Functions
+- `__init__()` (L59)\n- `_init_capture()` (L83): Initialize OpenCV VideoCapture with error handling\n- `_apply_camera_properties()` (L116): Best-effort camera property setup for stable ChArUco detection on Windows/MSMF.\n- `_set()` (L123)\n- `_get_camera_info()` (L171): Get current camera properties\n- `start()` (L183): Start capture thread\n- `_capture_loop()` (L200): Main capture loop (runs in separate thread)\n- `_attempt_reconnect()` (L296): Attempt to reconnect camera with exponential backoff\n- `read()` (L314): Read frame from queue (non-blocking)\n- `stop()` (L333): Stop capture thread and release resources\n- `get_stats()` (L349): Get capture statistics\n- `__enter__()` (L359)\n- `__exit__()` (L363)
+
+## Intra-module calls (heuristic)
+Lock, Path, Queue, Thread, VideoCapture, _apply_camera_properties, _attempt_reconnect, _get_camera_info, _init_capture, _set, debug, error, float, full, get, getBackendName, getLogger, get_nowait, get_stats, info, int, isOpened, is_alive, isfinite, isinstance, join, lower, max, min, on_first_frame, perf_counter, put_nowait, qsize, read, release, set, sleep, start, stop, str, warning
+
+## Code
+```python
 """
 Threaded Video Capture with Bounded Queue
 Prevents I/O blocking and ensures consistent frame delivery.
@@ -46,6 +66,16 @@ class CameraConfig:
 
 
 class ThreadedCamera:
+    """
+    Non-blocking video capture using producer-consumer pattern.
+
+    Key Features:
+    - Separate thread for frame acquisition (avoids I/O blocking)
+    - Bounded queue with graceful frame dropping
+    - Auto-reconnect on camera failure
+    - Thread-safe operations
+    """
+
     def __init__(self, config: CameraConfig):
         self.config = config
         self.capture: Optional[cv2.VideoCapture] = None
@@ -62,10 +92,7 @@ class ThreadedCamera:
         self.frames_dropped = 0
         self.reconnect_attempts = 0
 
-        # 👉 hier die neue Version
-        from pathlib import Path
-        self._is_video_file = isinstance(config.src, (str, Path))  # robustere Erkennung
-
+        self._is_video_file = isinstance(config.src, str)  # int=Webcam, str=Datei
         self._src_fps = 0.0
         self._next_vsync = None
         self._last_pos_msec = None
@@ -195,112 +222,88 @@ class ThreadedCamera:
         consecutive_failures = 0
         max_failures = 10
 
-        # Für "fps"-Sync: Periode aus Dateifps und gewünschter Playback-Rate
-        def _period_from_fps():
-            src_fps = max(self._src_fps, 1e-6)
-            rate = max(self.config.playback, 1e-6)
-            return (1.0 / src_fps) / rate
-
-        # Für "msec"-Sync: letzter Timecode (in ms) aus der Datei
-        last_pos_msec = None
-        next_vsync = None
-
         while self.running:
             try:
                 ret, frame = self.capture.read()
 
-                # --- EOF / Lesefehler ---
-                if not ret or frame is None:
+                if not ret:
                     consecutive_failures += 1
                     logger.warning(f"Frame read failed ({consecutive_failures}/{max_failures})")
 
-                    # Dateiquelle? -> Auto-Loop an Dateiende
-                    if self._is_video_file:
-                        try:
-                            pos_frames = int(self.capture.get(cv2.CAP_PROP_POS_FRAMES))
-                            total_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
-                        except Exception:
-                            pos_frames, total_frames = 0, 0
-                        if total_frames > 0 and pos_frames >= max(0, total_frames - 1):
-                            logger.info("[VideoLoop] EOF reached, restarting file at frame 0.")
+                    # --- Video-loop patch: restart video on EOF ---
+                    # Only applies if source is a file (not webcam)
+                    if isinstance(self.config.src, (str, Path)) and Path(str(self.config.src)).suffix.lower() in [
+                        ".mp4", ".avi", ".mov", ".mkv"]:
+                        pos_frames = int(self.capture.get(cv2.CAP_PROP_POS_FRAMES))
+                        total_frames = int(self.capture.get(cv2.CAP_PROP_FRAME_COUNT))
+                        if total_frames > 0 and pos_frames >= total_frames - 1:
+                            logger.info("[VideoLoop] End of file reached, restarting from frame 0.")
                             self.capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                            # Reset Sync-Zustände
-                            last_pos_msec = None
-                            next_vsync = None
-                            time.sleep(0.02)
+                            time.sleep(0.05)
                             continue
+                    # --- end patch ---
 
                     if consecutive_failures >= max_failures:
                         logger.error("Too many consecutive failures, attempting reconnect")
                         self._attempt_reconnect()
                         consecutive_failures = 0
 
-                    time.sleep(0.01)
+                    time.sleep(0.01)  # Brief pause before retry
                     continue
 
-                # Reset Fehlerzähler bei Erfolg
+                # Reset failure counter on success
                 consecutive_failures = 0
                 self.frames_captured += 1
 
-                # --- on_first_frame einmal ausführen ---
+                # --- NEW: call on_first_frame once with actual resolution ---
                 if (not self._first_frame_called
                         and self.config.apply_charuco_tune
                         and self.config.on_first_frame is not None):
                     try:
                         h, w = frame.shape[:2]
-                        self.config.on_first_frame(w, h)
+                        self.config.on_first_frame(w,
+                                                   h)  # e.g. cal.set_detector_params(cal.tune_params_for_resolution(w,h))
                         self._first_frame_called = True
                         logger.info(f"[TUNE] on_first_frame invoked with {w}x{h}")
                     except Exception as e:
                         logger.warning(f"[TUNE] on_first_frame failed: {e}")
-                        self._first_frame_called = True  # nie erneut versuchen
+                        self._first_frame_called = True  # avoid repeated attempts
+                # --- END NEW ---
 
-                # --- Playback/Sync NUR für Datei-Quellen ---
-                if self._is_video_file and self.config.video_sync != "off":
-                    mode = self.config.video_sync
-
-                    if mode == "fps":
-                        # feste Periode auf Basis Dateifps & Playback-Speed
-                        period = _period_from_fps()
-                        now = time.perf_counter()
-                        if next_vsync is None:
-                            next_vsync = now + period
-                        else:
-                            # sanfte Wartezeit, kein „Aufholen“
-                            sleep_s = next_vsync - now
-                            if sleep_s > 0:
-                                time.sleep(sleep_s)
-                            next_vsync = time.perf_counter() + period
-
-                    else:  # "msec"
-                        # nutze Timecodes (variable FPS); skaliere mit playback
-                        pos_ms = float(self.capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
-                        if last_pos_msec is None:
-                            last_pos_msec = pos_ms
-                        dt_ms = max(0.0, pos_ms - last_pos_msec)
-                        last_pos_msec = pos_ms
-                        # skaliere um Playback-Faktor (0.5 => doppelte Wartezeit, 2.0 => halbe)
-                        wait_s = (dt_ms / 1000.0) / max(self.config.playback, 1e-6)
-                        if wait_s > 0:
-                            time.sleep(wait_s)
-
-                    # Optional: Frame-Skip bei >1.0x, damit die Queue nicht vollläuft
-                    if self.config.playback > 1.0:
-                        # z.B. bei 2.0x jedes 2. Frame, bei 3.0x ~2/3 droppen
-                        skip_prob = min(0.85, (self.config.playback - 1.0) / max(self.config.playback, 1e-6))
-                        # Leicht deterministischer: nur droppen, wenn Queue fast voll
-                        if self.frame_queue.qsize() >= max(1, self.frame_queue.maxsize - 1):
-                            # Drop dieses Frame statt es einzureihen
-                            continue
-
-                # --- Queue Handling: nie blockieren; ältestes Frame droppen ---
+                # Graceful frame dropping if queue full
                 if self.frame_queue.full():
                     try:
-                        _ = self.frame_queue.get_nowait()
+                        # Drop oldest frame
+                        self.frame_queue.get_nowait()
                         self.frames_dropped += 1
                     except queue.Empty:
                         pass
 
+                # --- VSYNC nur für Datei-Quellen ---
+                if self._is_video_file and self.config.video_sync != "off":
+                    if self.config.video_sync == "fps":
+                        period = (1.0 / max(self._src_fps, 1e-6)) / max(self.config.playback, 1e-6)
+                        now = time.perf_counter()
+                        if self._next_vsync is None:
+                            self._next_vsync = now + period
+                        else:
+                            sleep_s = self._next_vsync - now
+                            if sleep_s > 0:
+                                time.sleep(sleep_s)
+                            # robust gegen Drift: nicht “aufholen”, eher neu setzen
+                            self._next_vsync = time.perf_counter() + period
+
+                    else:  # "msec" -> nutze Dateizeitstempel für variable FPS
+                        pos_ms = float(self.capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+                        if self._last_pos_msec is None:
+                            self._last_pos_msec = pos_ms
+                        dt_ms = max(0.0, pos_ms - self._last_pos_msec)
+                        self._last_pos_msec = pos_ms
+                        target_s = (dt_ms / 1000.0) / max(self.config.playback, 1e-6)
+                        if target_s > 0:
+                            time.sleep(target_s)
+
+                # Add new frame to queue
                 try:
                     self.frame_queue.put_nowait(frame)
                 except queue.Full:
@@ -308,7 +311,7 @@ class ThreadedCamera:
 
             except Exception as e:
                 logger.error(f"Capture loop error: {e}")
-                time.sleep(0.05)
+                time.sleep(0.1)
 
     def _attempt_reconnect(self):
         """Attempt to reconnect camera with exponential backoff"""
@@ -379,3 +382,4 @@ class ThreadedCamera:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.stop()
+```

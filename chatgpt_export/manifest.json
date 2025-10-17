@@ -1,0 +1,3380 @@
+{
+  "modules": [
+    {
+      "path": "chatgpt_repo_exporter.py",
+      "hash": "3a3e1c3d2411",
+      "loc": 10,
+      "imports": [
+        "argparse",
+        "ast",
+        "hashlib",
+        "json",
+        "os"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Dict",
+            "List",
+            "Optional",
+            "Tuple",
+            "Set"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "ModuleInfo",
+          "lineno": 42
+        }
+      ],
+      "functions": [
+        {
+          "name": "sha256_text",
+          "lineno": 23
+        },
+        {
+          "name": "should_exclude",
+          "lineno": 26
+        },
+        {
+          "name": "read_text",
+          "lineno": 30
+        },
+        {
+          "name": "relpath",
+          "lineno": 36
+        },
+        {
+          "name": "walk_python_files",
+          "lineno": 95
+        },
+        {
+          "name": "ensure_dir",
+          "lineno": 109
+        },
+        {
+          "name": "write_text",
+          "lineno": 112
+        },
+        {
+          "name": "make_module_markdown",
+          "lineno": 116
+        },
+        {
+          "name": "build_import_graph",
+          "lineno": 155
+        },
+        {
+          "name": "mermaid_from_import_graph",
+          "lineno": 175
+        },
+        {
+          "name": "write_index",
+          "lineno": 186
+        },
+        {
+          "name": "write_manifest_and_flow",
+          "lineno": 202
+        },
+        {
+          "name": "write_modules",
+          "lineno": 225
+        },
+        {
+          "name": "run",
+          "lineno": 230
+        },
+        {
+          "name": "main",
+          "lineno": 237
+        },
+        {
+          "name": "__init__",
+          "lineno": 43
+        },
+        {
+          "name": "_parse",
+          "lineno": 57
+        },
+        {
+          "name": "nid",
+          "lineno": 177
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "ArgumentParser",
+        "ModuleInfo",
+        "Path",
+        "_parse",
+        "add",
+        "add_argument",
+        "any",
+        "append",
+        "as_posix",
+        "build_import_graph",
+        "count",
+        "cwd",
+        "dumps",
+        "encode",
+        "endswith",
+        "ensure_dir",
+        "get_docstring",
+        "hexdigest",
+        "isinstance",
+        "items",
+        "join",
+        "len",
+        "lower",
+        "main",
+        "make_module_markdown",
+        "mermaid_from_import_graph",
+        "mkdir",
+        "nid",
+        "parse",
+        "parse_args",
+        "print",
+        "read_text",
+        "relative_to",
+        "relpath",
+        "replace",
+        "resolve",
+        "run",
+        "set",
+        "sha256",
+        "sha256_text",
+        "should_exclude",
+        "sorted",
+        "splitlines",
+        "startswith",
+        "str",
+        "sum",
+        "walk",
+        "walk_python_files",
+        "with_suffix",
+        "write_index",
+        "write_manifest_and_flow",
+        "write_modules",
+        "write_text"
+      ]
+    },
+    {
+      "path": "main.py",
+      "hash": "90933234d3d5",
+      "loc": 1,
+      "imports": [
+        "argparse",
+        "cv2",
+        "json",
+        "logging",
+        "numpy",
+        "os",
+        "sys",
+        "time",
+        "yaml"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "List"
+          ]
+        },
+        {
+          "module": "collections",
+          "names": [
+            "deque"
+          ]
+        },
+        {
+          "module": "src.game.game",
+          "names": [
+            "DemoGame",
+            "GameMode"
+          ]
+        },
+        {
+          "module": "src.vision.dart_impact_detector",
+          "names": [
+            "apply_detector_preset"
+          ]
+        },
+        {
+          "module": "src.pipeline.frame_result",
+          "names": [
+            "FrameResult"
+          ]
+        },
+        {
+          "module": "src.board",
+          "names": [
+            "BoardConfig",
+            "BoardMapper",
+            "Calibration",
+            "draw_ring_circles",
+            "draw_sector_labels"
+          ]
+        },
+        {
+          "module": "src.overlay.heatmap",
+          "names": [
+            "HeatmapAccumulator"
+          ]
+        },
+        {
+          "module": "src.analytics.polar_heatmap",
+          "names": [
+            "PolarHeatmap"
+          ]
+        },
+        {
+          "module": "src.analytics.stats_accumulator",
+          "names": [
+            "StatsAccumulator"
+          ]
+        },
+        {
+          "module": "src.capture",
+          "names": [
+            "ThreadedCamera",
+            "CameraConfig",
+            "FPSCounter"
+          ]
+        },
+        {
+          "module": "src.calibration.roi_processor",
+          "names": [
+            "ROIProcessor",
+            "ROIConfig"
+          ]
+        },
+        {
+          "module": "src.calibration.unified_calibrator",
+          "names": [
+            "UnifiedCalibrator",
+            "CalibrationMethod"
+          ]
+        },
+        {
+          "module": "src.vision",
+          "names": [
+            "MotionDetector",
+            "MotionConfig",
+            "DartImpactDetector",
+            "DartDetectorConfig",
+            "FieldMapper",
+            "FieldMapperConfig"
+          ]
+        },
+        {
+          "module": "src.utils.performance_profiler",
+          "names": [
+            "PerformanceProfiler"
+          ]
+        },
+        {
+          "module": "src.calibration.aruco_quad_calibrator",
+          "names": [
+            "ArucoQuadCalibrator"
+          ]
+        },
+        {
+          "module": "src.calibration.calib_io",
+          "names": [
+            "save_calibration_yaml"
+          ]
+        },
+        {
+          "module": "src.calibration.calib_io",
+          "names": [
+            "load_calibration_yaml"
+          ]
+        },
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "DartVisionApp",
+          "lineno": 122
+        }
+      ],
+      "functions": [
+        {
+          "name": "setup_logging",
+          "lineno": 51
+        },
+        {
+          "name": "main",
+          "lineno": 1594
+        },
+        {
+          "name": "__init__",
+          "lineno": 123
+        },
+        {
+          "name": "_hough_refine_center",
+          "lineno": 200
+        },
+        {
+          "name": "_hud_compute",
+          "lineno": 278
+        },
+        {
+          "name": "_hud_color",
+          "lineno": 293
+        },
+        {
+          "name": "_hud_draw",
+          "lineno": 302
+        },
+        {
+          "name": "_overlay_center_radius",
+          "lineno": 308
+        },
+        {
+          "name": "_points_from_mapping",
+          "lineno": 315
+        },
+        {
+          "name": "_draw_traffic_light",
+          "lineno": 333
+        },
+        {
+          "name": "_sync_mapper",
+          "lineno": 358
+        },
+        {
+          "name": "build_roi_adjust_matrix",
+          "lineno": 365
+        },
+        {
+          "name": "_effective_H",
+          "lineno": 408
+        },
+        {
+          "name": "_apply_effective_H_if_dirty",
+          "lineno": 414
+        },
+        {
+          "name": "_draw_help_overlay",
+          "lineno": 424
+        },
+        {
+          "name": "setup",
+          "lineno": 475
+        },
+        {
+          "name": "_calibration_ui",
+          "lineno": 616
+        },
+        {
+          "name": "_apply_loaded_yaml",
+          "lineno": 892
+        },
+        {
+          "name": "_apply_loaded_calibration",
+          "lineno": 981
+        },
+        {
+          "name": "process_frame",
+          "lineno": 1024
+        },
+        {
+          "name": "create_visualization",
+          "lineno": 1072
+        },
+        {
+          "name": "run",
+          "lineno": 1241
+        },
+        {
+          "name": "_recalibrate_and_apply",
+          "lineno": 1489
+        },
+        {
+          "name": "cleanup",
+          "lineno": 1568
+        },
+        {
+          "name": "score",
+          "lineno": 237
+        },
+        {
+          "name": "st_b",
+          "lineno": 334
+        },
+        {
+          "name": "st_f",
+          "lineno": 336
+        },
+        {
+          "name": "st_e",
+          "lineno": 338
+        },
+        {
+          "name": "_metrics_for_hud",
+          "lineno": 676
+        },
+        {
+          "name": "on_mouse",
+          "lineno": 684
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "ArgumentParser",
+        "ArucoQuadCalibrator",
+        "BoardConfig",
+        "BoardMapper",
+        "Calibration",
+        "CameraConfig",
+        "Canny",
+        "DartDetectorConfig",
+        "DartImpactDetector",
+        "DartVisionApp",
+        "DemoGame",
+        "FPSCounter",
+        "FieldMapper",
+        "FieldMapperConfig",
+        "FileHandler",
+        "Formatter",
+        "HeatmapAccumulator",
+        "HoughCircles",
+        "Laplacian",
+        "MotionConfig",
+        "MotionDetector",
+        "Path",
+        "PerformanceProfiler",
+        "PolarHeatmap",
+        "ROIConfig",
+        "ROIProcessor",
+        "StatsAccumulator",
+        "StreamHandler",
+        "ThreadedCamera",
+        "UnifiedCalibrator",
+        "_apply_effective_H_if_dirty",
+        "_apply_loaded_calibration",
+        "_apply_loaded_yaml",
+        "_calibration_ui",
+        "_draw_help_overlay",
+        "_draw_traffic_light",
+        "_effective_H",
+        "_homography_and_metrics",
+        "_hough_refine_center",
+        "_hud_color",
+        "_hud_compute",
+        "_overlay_center_radius",
+        "_points_from_mapping",
+        "_recalibrate_and_apply",
+        "_sync_mapper",
+        "abs",
+        "add",
+        "addHandler",
+        "addWeighted",
+        "add_argument",
+        "add_hit",
+        "add_mutually_exclusive_group",
+        "all",
+        "append",
+        "apply",
+        "apply_detector_preset",
+        "apply_points",
+        "array",
+        "astype",
+        "bool",
+        "build_roi_adjust_matrix",
+        "calibrate_from_frame",
+        "circle",
+        "cleanup",
+        "clear",
+        "clear_impacts",
+        "copy",
+        "cos",
+        "createCLAHE",
+        "create_visualization",
+        "cvtColor",
+        "debug",
+        "deg2rad",
+        "deque",
+        "destroyAllWindows",
+        "destroyWindow",
+        "detect_charuco",
+        "detect_dart",
+        "detect_motion",
+        "drawDetectedMarkers",
+        "drawFrameAxes",
+        "draw_debug",
+        "draw_ring_circles",
+        "draw_sector_labels",
+        "enumerate",
+        "error",
+        "estimate_pose_charuco",
+        "exists",
+        "expanduser",
+        "export_csv",
+        "export_csv_dists",
+        "export_json",
+        "export_png",
+        "float",
+        "float32",
+        "get",
+        "getLevelName",
+        "getLogger",
+        "getWindowProperty",
+        "get_confirmed_impacts",
+        "get_stats",
+        "getattr",
+        "hasattr",
+        "imshow",
+        "imwrite",
+        "info",
+        "int",
+        "isfinite",
+        "isinstance",
+        "len",
+        "load_calibration_yaml",
+        "lower",
+        "main",
+        "makedirs",
+        "max",
+        "mean",
+        "medianBlur",
+        "min",
+        "namedWindow",
+        "open",
+        "ord",
+        "overlay_panel",
+        "parse_args",
+        "perf_counter",
+        "process_frame",
+        "putText",
+        "ravel",
+        "read",
+        "rectangle",
+        "render_overlay",
+        "reset",
+        "reshape",
+        "resize",
+        "resolve",
+        "round",
+        "run",
+        "safe_load",
+        "save_calibration_yaml",
+        "score_from_hit",
+        "selftest",
+        "set",
+        "setFormatter",
+        "setLevel",
+        "setMouseCallback",
+        "set_detector_params",
+        "set_homography_from_matrix",
+        "setdefault",
+        "setup",
+        "setup_logging",
+        "sin",
+        "sleep",
+        "sorted",
+        "split",
+        "st_b",
+        "st_e",
+        "st_f",
+        "start",
+        "startswith",
+        "stop",
+        "str",
+        "switch_mode",
+        "time",
+        "to_yaml_dict",
+        "tolist",
+        "tune_params_for_resolution",
+        "tuple",
+        "update",
+        "upper",
+        "var",
+        "waitKey",
+        "waitKeyEx",
+        "warning",
+        "warp_roi",
+        "zeros"
+      ]
+    },
+    {
+      "path": "src\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\analytics\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\analytics\\polar_heatmap.py",
+      "hash": "6eb12654c91f",
+      "loc": 1,
+      "imports": [
+        "csv",
+        "cv2",
+        "numpy",
+        "os"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "PolarHeatmap",
+          "lineno": 11
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 16
+        },
+        {
+          "name": "add",
+          "lineno": 25
+        },
+        {
+          "name": "_render_core",
+          "lineno": 39
+        },
+        {
+          "name": "panel",
+          "lineno": 69
+        },
+        {
+          "name": "overlay_panel",
+          "lineno": 75
+        },
+        {
+          "name": "export_png",
+          "lineno": 88
+        },
+        {
+          "name": "export_csv",
+          "lineno": 92
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "_render_core",
+        "addWeighted",
+        "any",
+        "applyColorMap",
+        "astype",
+        "clip",
+        "copy",
+        "dirname",
+        "enumerate",
+        "float",
+        "get",
+        "imwrite",
+        "int",
+        "len",
+        "line",
+        "makedirs",
+        "max",
+        "min",
+        "open",
+        "panel",
+        "percentile",
+        "putText",
+        "range",
+        "rectangle",
+        "resize",
+        "str",
+        "tolist",
+        "writer",
+        "writerow",
+        "zeros"
+      ]
+    },
+    {
+      "path": "src\\analytics\\stats_accumulator.py",
+      "hash": "c17d9cdd4746",
+      "loc": 1,
+      "imports": [
+        "csv",
+        "json",
+        "numpy",
+        "os",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass",
+            "asdict"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Dict",
+            "Any",
+            "Tuple"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "HitRecord",
+          "lineno": 12
+        },
+        {
+          "name": "StatsAccumulator",
+          "lineno": 20
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 21
+        },
+        {
+          "name": "_label",
+          "lineno": 35
+        },
+        {
+          "name": "add",
+          "lineno": 43
+        },
+        {
+          "name": "ring_distribution",
+          "lineno": 70
+        },
+        {
+          "name": "sector_distribution",
+          "lineno": 77
+        },
+        {
+          "name": "ring_sector_matrix",
+          "lineno": 81
+        },
+        {
+          "name": "summary",
+          "lineno": 90
+        },
+        {
+          "name": "export_json",
+          "lineno": 106
+        },
+        {
+          "name": "export_csv_dists",
+          "lineno": 111
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "HitRecord",
+        "_label",
+        "dirname",
+        "dump",
+        "enumerate",
+        "float",
+        "get",
+        "int",
+        "items",
+        "len",
+        "makedirs",
+        "max",
+        "open",
+        "range",
+        "ring_distribution",
+        "ring_sector_matrix",
+        "sector_distribution",
+        "startswith",
+        "str",
+        "sum",
+        "summary",
+        "time",
+        "tolist",
+        "writer",
+        "writerow",
+        "zeros"
+      ]
+    },
+    {
+      "path": "src\\board\\__init__.py",
+      "hash": "fa49f1e6e522",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "config_models",
+          "names": [
+            "BoardConfig"
+          ]
+        },
+        {
+          "module": "board_mapping",
+          "names": [
+            "BoardMapper",
+            "Calibration"
+          ]
+        },
+        {
+          "module": "overlays",
+          "names": [
+            "draw_ring_circles",
+            "draw_sector_labels"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\board\\board_mapping.py",
+      "hash": "6896276564e0",
+      "loc": 1,
+      "imports": [
+        "math",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Tuple",
+            "Optional"
+          ]
+        },
+        {
+          "module": "config_models",
+          "names": [
+            "BoardConfig"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "Calibration",
+          "lineno": 14
+        },
+        {
+          "name": "BoardMapper",
+          "lineno": 20
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 21
+        },
+        {
+          "name": "cart2polar_norm",
+          "lineno": 26
+        },
+        {
+          "name": "rel2screen",
+          "lineno": 49
+        },
+        {
+          "name": "classify_ring",
+          "lineno": 58
+        },
+        {
+          "name": "classify_sector",
+          "lineno": 76
+        },
+        {
+          "name": "score_from_hit",
+          "lineno": 86
+        },
+        {
+          "name": "batch_score",
+          "lineno": 108
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "append",
+        "array",
+        "atan2",
+        "cart2polar_norm",
+        "classify_ring",
+        "classify_sector",
+        "degrees",
+        "float",
+        "hypot",
+        "int",
+        "max",
+        "score_from_hit"
+      ]
+    },
+    {
+      "path": "src\\board\\config_models.py",
+      "hash": "eb431be759ca",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "pydantic",
+          "names": [
+            "BaseModel",
+            "Field",
+            "validator"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "List"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "Angles",
+          "lineno": 6
+        },
+        {
+          "name": "Radii",
+          "lineno": 11
+        },
+        {
+          "name": "Sectors",
+          "lineno": 56
+        },
+        {
+          "name": "RuntimeOpts",
+          "lineno": 72
+        },
+        {
+          "name": "BoardConfig",
+          "lineno": 76
+        }
+      ],
+      "functions": [
+        {
+          "name": "in_unit_interval",
+          "lineno": 21
+        },
+        {
+          "name": "bull_monotonic",
+          "lineno": 27
+        },
+        {
+          "name": "triple_inner_after_bull",
+          "lineno": 33
+        },
+        {
+          "name": "triple_outer_after_inner",
+          "lineno": 39
+        },
+        {
+          "name": "double_inner_after_triple",
+          "lineno": 45
+        },
+        {
+          "name": "double_outer_is_one",
+          "lineno": 51
+        },
+        {
+          "name": "unique_20_entries",
+          "lineno": 61
+        },
+        {
+          "name": "width_is_18",
+          "lineno": 67
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "Angles",
+        "Field",
+        "Radii",
+        "RuntimeOpts",
+        "Sectors",
+        "ValueError",
+        "abs",
+        "len",
+        "list",
+        "range",
+        "sorted",
+        "validator"
+      ]
+    },
+    {
+      "path": "src\\board\\hough_circle.py",
+      "hash": "b8dbe99a68ea",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "find_board_circle",
+          "lineno": 7
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "HoughCircles",
+        "ValueError",
+        "around",
+        "int",
+        "medianBlur",
+        "uint16"
+      ]
+    },
+    {
+      "path": "src\\board\\overlays.py",
+      "hash": "6a38948f8c09",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "math",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Tuple"
+          ]
+        },
+        {
+          "module": "board_mapping",
+          "names": [
+            "BoardMapper"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "draw_sector_labels",
+          "lineno": 10
+        },
+        {
+          "name": "draw_ring_circles",
+          "lineno": 32
+        },
+        {
+          "name": "annotate_hit",
+          "lineno": 42
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "circle",
+        "copy",
+        "cos",
+        "int",
+        "line",
+        "putText",
+        "radians",
+        "range",
+        "rel2screen",
+        "score_from_hit",
+        "sin",
+        "str"
+      ]
+    },
+    {
+      "path": "src\\calibration\\__init__.py",
+      "hash": "3d0079bc312f",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "roi_processor",
+          "names": [
+            "ROIProcessor",
+            "ROIConfig"
+          ]
+        },
+        {
+          "module": "calibration_manager",
+          "names": [
+            "CalibrationManager",
+            "CalibrationData"
+          ]
+        },
+        {
+          "module": "unified_calibrator",
+          "names": [
+            "UnifiedCalibrator",
+            "CalibrationMethod",
+            "CalibrationResult"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\calibration\\aruco_calibrator.py",
+      "hash": "4a9a17abbdc6",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "List"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "ArucoCalibrator",
+          "lineno": 14
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 17
+        },
+        {
+          "name": "detect_markers",
+          "lineno": 22
+        },
+        {
+          "name": "draw_markers",
+          "lineno": 39
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArucoDetector",
+        "DetectorParameters",
+        "astype",
+        "copy",
+        "cvtColor",
+        "detectMarkers",
+        "getLogger",
+        "getPredefinedDictionary",
+        "info",
+        "len",
+        "mean",
+        "polylines",
+        "putText",
+        "range",
+        "sort",
+        "tuple",
+        "warning"
+      ]
+    },
+    {
+      "path": "src\\calibration\\aruco_quad_calibrator.py",
+      "hash": "08389fa064d9",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "List",
+            "Optional",
+            "Tuple",
+            "Dict"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "ArucoQuadCalibrator",
+          "lineno": 19
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 20
+        },
+        {
+          "name": "detect",
+          "lineno": 42
+        },
+        {
+          "name": "_centers_from_corners",
+          "lineno": 52
+        },
+        {
+          "name": "_order_points_tl_tr_br_bl",
+          "lineno": 62
+        },
+        {
+          "name": "estimate_homography_from_centers",
+          "lineno": 77
+        },
+        {
+          "name": "_axis_aligned_box",
+          "lineno": 91
+        },
+        {
+          "name": "estimate_scale_mm_per_px",
+          "lineno": 103
+        },
+        {
+          "name": "calibrate_from_frame",
+          "lineno": 117
+        },
+        {
+          "name": "draw_debug",
+          "lineno": 186
+        },
+        {
+          "name": "to_yaml_dict",
+          "lineno": 209
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArucoDetector",
+        "DetectorParameters",
+        "_axis_aligned_box",
+        "_centers_from_corners",
+        "_order_points_tl_tr_br_bl",
+        "append",
+        "argmax",
+        "argmin",
+        "argsort",
+        "array",
+        "asarray",
+        "astype",
+        "circle",
+        "contourArea",
+        "copy",
+        "cvtColor",
+        "detect",
+        "detectMarkers",
+        "diff",
+        "drawDetectedMarkers",
+        "enumerate",
+        "estimate_homography_from_centers",
+        "estimate_scale_mm_per_px",
+        "findHomography",
+        "flatten",
+        "float",
+        "getPredefinedDictionary",
+        "hasattr",
+        "int",
+        "inv",
+        "isinstance",
+        "len",
+        "line",
+        "list",
+        "max",
+        "mean",
+        "norm",
+        "perspectiveTransform",
+        "putText",
+        "range",
+        "ravel",
+        "reshape",
+        "sum",
+        "tolist",
+        "tuple",
+        "update"
+      ]
+    },
+    {
+      "path": "src\\calibration\\calib_io.py",
+      "hash": "d467e9dd7f33",
+      "loc": 1,
+      "imports": [
+        "numpy",
+        "yaml"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Any",
+            "Dict"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "_deep_to_serializable",
+          "lineno": 6
+        },
+        {
+          "name": "save_calibration_yaml",
+          "lineno": 19
+        },
+        {
+          "name": "load_calibration_yaml",
+          "lineno": 26
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "FileNotFoundError",
+        "Path",
+        "_deep_to_serializable",
+        "exists",
+        "float",
+        "int",
+        "isinstance",
+        "items",
+        "mkdir",
+        "open",
+        "safe_dump",
+        "safe_load",
+        "tolist"
+      ]
+    },
+    {
+      "path": "src\\calibration\\calib_loader.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\calibration\\calibration_manager.py",
+      "hash": "789335232e59",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy",
+        "os",
+        "tempfile",
+        "yaml"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "datetime",
+          "names": [
+            "datetime"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "List",
+            "Dict"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass",
+            "asdict"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "CalibrationData",
+          "lineno": 27
+        },
+        {
+          "name": "CalibrationManager",
+          "lineno": 64
+        }
+      ],
+      "functions": [
+        {
+          "name": "to_dict",
+          "lineno": 39
+        },
+        {
+          "name": "_homography_to_list",
+          "lineno": 53
+        },
+        {
+          "name": "__init__",
+          "lineno": 74
+        },
+        {
+          "name": "_load_config",
+          "lineno": 99
+        },
+        {
+          "name": "_atomic_save_config",
+          "lineno": 139
+        },
+        {
+          "name": "manual_calibration",
+          "lineno": 183
+        },
+        {
+          "name": "charuco_calibration",
+          "lineno": 250
+        },
+        {
+          "name": "get_homography",
+          "lineno": 301
+        },
+        {
+          "name": "get_calibration",
+          "lineno": 307
+        },
+        {
+          "name": "is_valid",
+          "lineno": 311
+        },
+        {
+          "name": "invalidate",
+          "lineno": 315
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "CalibrationData",
+        "CharucoBoard",
+        "DetectorParameters",
+        "Path",
+        "_atomic_save_config",
+        "_homography_to_list",
+        "_load_config",
+        "all",
+        "array",
+        "bool",
+        "cvtColor",
+        "detectMarkers",
+        "dump",
+        "error",
+        "exists",
+        "fdopen",
+        "float",
+        "float32",
+        "get",
+        "getLogger",
+        "getPerspectiveTransform",
+        "getPredefinedDictionary",
+        "info",
+        "int",
+        "interpolateCornersCharuco",
+        "isinstance",
+        "isoformat",
+        "len",
+        "list",
+        "mkdir",
+        "mkstemp",
+        "norm",
+        "open",
+        "replace",
+        "safe_load",
+        "sum",
+        "to_dict",
+        "tolist",
+        "tuple",
+        "unlink",
+        "utcnow",
+        "warning"
+      ]
+    },
+    {
+      "path": "src\\calibration\\charuco_calibrator.py",
+      "hash": "e1c3685c3f95",
+      "loc": 4,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "List"
+          ]
+        },
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "CharucoCalibrator",
+          "lineno": 18
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 25
+        },
+        {
+          "name": "detect_board",
+          "lineno": 106
+        },
+        {
+          "name": "calibrate_camera_multi_frame",
+          "lineno": 184
+        },
+        {
+          "name": "calibrate_camera_single_frame",
+          "lineno": 248
+        },
+        {
+          "name": "get_dartboard_homography",
+          "lineno": 294
+        },
+        {
+          "name": "undistort_image",
+          "lineno": 363
+        },
+        {
+          "name": "draw_detected_board",
+          "lineno": 405
+        },
+        {
+          "name": "save_calibration",
+          "lineno": 448
+        },
+        {
+          "name": "load_calibration",
+          "lineno": 484
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArucoDetector",
+        "CharucoBoard",
+        "DetectorParameters",
+        "Path",
+        "all",
+        "append",
+        "array",
+        "astype",
+        "calibrateCameraCharuco",
+        "circle",
+        "copy",
+        "cvtColor",
+        "debug",
+        "detectMarkers",
+        "detect_board",
+        "enumerate",
+        "error",
+        "estimatePoseCharucoBoard",
+        "exists",
+        "float",
+        "float32",
+        "getLogger",
+        "getOptimalNewCameraMatrix",
+        "getPerspectiveTransform",
+        "getPredefinedDictionary",
+        "info",
+        "int",
+        "len",
+        "load",
+        "matchImagePoints",
+        "mkdir",
+        "projectPoints",
+        "putText",
+        "range",
+        "ravel",
+        "reshape",
+        "savez",
+        "str",
+        "tuple",
+        "undistort",
+        "warning",
+        "zeros"
+      ]
+    },
+    {
+      "path": "src\\calibration\\charuco_tuned_params.py",
+      "hash": "c7ad5197ab6c",
+      "loc": 1,
+      "imports": [
+        "cv2"
+      ],
+      "from_imports": [],
+      "classes": [],
+      "functions": [
+        {
+          "name": "tuned_charuco_params",
+          "lineno": 4
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "DetectorParameters",
+        "min"
+      ]
+    },
+    {
+      "path": "src\\calibration\\roi_processor.py",
+      "hash": "3081a3847130",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "ROIConfig",
+          "lineno": 18
+        },
+        {
+          "name": "ROIProcessor",
+          "lineno": 26
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 37
+        },
+        {
+          "name": "set_homography",
+          "lineno": 51
+        },
+        {
+          "name": "set_homography_from_matrix",
+          "lineno": 100
+        },
+        {
+          "name": "warp_roi",
+          "lineno": 123
+        },
+        {
+          "name": "_identity_fallback",
+          "lineno": 154
+        },
+        {
+          "name": "polar_unwrap",
+          "lineno": 177
+        },
+        {
+          "name": "project_point_to_roi",
+          "lineno": 228
+        },
+        {
+          "name": "project_point_to_original",
+          "lineno": 265
+        },
+        {
+          "name": "get_stats",
+          "lineno": 295
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ROIConfig",
+        "_identity_fallback",
+        "array",
+        "copy",
+        "error",
+        "float32",
+        "getLogger",
+        "getPerspectiveTransform",
+        "info",
+        "int",
+        "inv",
+        "max",
+        "min",
+        "perspectiveTransform",
+        "reshape",
+        "resize",
+        "warning",
+        "warpPerspective",
+        "warpPolar"
+      ]
+    },
+    {
+      "path": "src\\calibration\\unified_calibrator.py",
+      "hash": "73a5d5ea2063",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "List",
+            "Dict"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "enum",
+          "names": [
+            "Enum"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "CalibrationMethod",
+          "lineno": 20
+        },
+        {
+          "name": "CalibrationResult",
+          "lineno": 28
+        },
+        {
+          "name": "UnifiedCalibrator",
+          "lineno": 44
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 52
+        },
+        {
+          "name": "selftest",
+          "lineno": 104
+        },
+        {
+          "name": "_make_charuco_board",
+          "lineno": 196
+        },
+        {
+          "name": "_create_detector_params",
+          "lineno": 210
+        },
+        {
+          "name": "_detect_markers",
+          "lineno": 228
+        },
+        {
+          "name": "tune_params_for_resolution",
+          "lineno": 238
+        },
+        {
+          "name": "set_detector_params",
+          "lineno": 287
+        },
+        {
+          "name": "_interpolate_charuco",
+          "lineno": 294
+        },
+        {
+          "name": "detect_charuco",
+          "lineno": 333
+        },
+        {
+          "name": "add_charuco_sample",
+          "lineno": 343
+        },
+        {
+          "name": "calibrate_from_samples",
+          "lineno": 355
+        },
+        {
+          "name": "estimate_pose_charuco",
+          "lineno": 397
+        },
+        {
+          "name": "reset_charuco_samples",
+          "lineno": 407
+        },
+        {
+          "name": "_detect_aruco_markers",
+          "lineno": 414
+        },
+        {
+          "name": "_homography_and_metrics",
+          "lineno": 425
+        },
+        {
+          "name": "calibrate_auto",
+          "lineno": 437
+        },
+        {
+          "name": "draw_overlays",
+          "lineno": 531
+        },
+        {
+          "name": "to_yaml_dict",
+          "lineno": 543
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArucoDetector",
+        "CalibrationResult",
+        "CharucoBoard",
+        "CharucoBoard_create",
+        "CharucoDetector",
+        "DetectorParameters",
+        "RuntimeError",
+        "ValueError",
+        "_create_detector_params",
+        "_detect_aruco_markers",
+        "_detect_markers",
+        "_homography_and_metrics",
+        "_interpolate_charuco",
+        "_make_charuco_board",
+        "append",
+        "ascontiguousarray",
+        "astype",
+        "bool",
+        "calibrateCameraCharuco",
+        "calibrateCameraCharucoExtended",
+        "clear",
+        "copy",
+        "cvtColor",
+        "detectBoard",
+        "detectMarkers",
+        "detect_charuco",
+        "drawDetectedCornersCharuco",
+        "drawDetectedMarkers",
+        "drawFrameAxes",
+        "error",
+        "estimatePoseCharucoBoard",
+        "estimate_pose_charuco",
+        "float",
+        "float32",
+        "full",
+        "generateImage",
+        "getLogger",
+        "getPerspectiveTransform",
+        "getPredefinedDictionary",
+        "getattr",
+        "hasattr",
+        "info",
+        "int",
+        "interpolateCornersCharuco",
+        "isinstance",
+        "len",
+        "list",
+        "max",
+        "mean",
+        "min",
+        "norm",
+        "print",
+        "range",
+        "reshape",
+        "setLevel",
+        "sort",
+        "warning"
+      ]
+    },
+    {
+      "path": "src\\capture\\__init__.py",
+      "hash": "981593b9a4f1",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "threaded_camera",
+          "names": [
+            "ThreadedCamera",
+            "CameraConfig"
+          ]
+        },
+        {
+          "module": "fps_counter",
+          "names": [
+            "FPSCounter",
+            "FPSStats"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\capture\\fps_counter.py",
+      "hash": "ad283e1882c1",
+      "loc": 1,
+      "imports": [
+        "numpy",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "collections",
+          "names": [
+            "deque"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "FPSStats",
+          "lineno": 14
+        },
+        {
+          "name": "FPSCounter",
+          "lineno": 24
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 34
+        },
+        {
+          "name": "update",
+          "lineno": 45
+        },
+        {
+          "name": "get_fps",
+          "lineno": 63
+        },
+        {
+          "name": "get_stats",
+          "lineno": 71
+        },
+        {
+          "name": "get_overall_fps",
+          "lineno": 92
+        },
+        {
+          "name": "reset",
+          "lineno": 97
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "FPSStats",
+        "append",
+        "array",
+        "clear",
+        "deque",
+        "len",
+        "mean",
+        "median",
+        "percentile",
+        "perf_counter"
+      ]
+    },
+    {
+      "path": "src\\capture\\threaded_camera.py",
+      "hash": "37825648afe0",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy",
+        "queue",
+        "threading",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "Callable"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "CameraConfig",
+          "lineno": 22
+        },
+        {
+          "name": "ThreadedCamera",
+          "lineno": 48
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 59
+        },
+        {
+          "name": "_init_capture",
+          "lineno": 83
+        },
+        {
+          "name": "_apply_camera_properties",
+          "lineno": 116
+        },
+        {
+          "name": "_get_camera_info",
+          "lineno": 171
+        },
+        {
+          "name": "start",
+          "lineno": 183
+        },
+        {
+          "name": "_capture_loop",
+          "lineno": 200
+        },
+        {
+          "name": "_attempt_reconnect",
+          "lineno": 296
+        },
+        {
+          "name": "read",
+          "lineno": 314
+        },
+        {
+          "name": "stop",
+          "lineno": 333
+        },
+        {
+          "name": "get_stats",
+          "lineno": 349
+        },
+        {
+          "name": "__enter__",
+          "lineno": 359
+        },
+        {
+          "name": "__exit__",
+          "lineno": 363
+        },
+        {
+          "name": "_set",
+          "lineno": 123
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "Lock",
+        "Path",
+        "Queue",
+        "Thread",
+        "VideoCapture",
+        "_apply_camera_properties",
+        "_attempt_reconnect",
+        "_get_camera_info",
+        "_init_capture",
+        "_set",
+        "debug",
+        "error",
+        "float",
+        "full",
+        "get",
+        "getBackendName",
+        "getLogger",
+        "get_nowait",
+        "get_stats",
+        "info",
+        "int",
+        "isOpened",
+        "is_alive",
+        "isfinite",
+        "isinstance",
+        "join",
+        "lower",
+        "max",
+        "min",
+        "on_first_frame",
+        "perf_counter",
+        "put_nowait",
+        "qsize",
+        "read",
+        "release",
+        "set",
+        "sleep",
+        "start",
+        "stop",
+        "str",
+        "warning"
+      ]
+    },
+    {
+      "path": "src\\game\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\game\\game.py",
+      "hash": "5cf488a7f171",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "GameMode",
+          "lineno": 5
+        },
+        {
+          "name": "LastThrow",
+          "lineno": 10
+        },
+        {
+          "name": "DemoGame",
+          "lineno": 14
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 15
+        },
+        {
+          "name": "reset",
+          "lineno": 20
+        },
+        {
+          "name": "switch_mode",
+          "lineno": 28
+        },
+        {
+          "name": "apply_points",
+          "lineno": 32
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "LastThrow",
+        "int",
+        "lower",
+        "reset"
+      ]
+    },
+    {
+      "path": "src\\overlay\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\overlay\\heatmap.py",
+      "hash": "2fc57bf8e975",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "numpy",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "HeatmapAccumulator",
+          "lineno": 8
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 15
+        },
+        {
+          "name": "_maybe_decay",
+          "lineno": 49
+        },
+        {
+          "name": "add_hit",
+          "lineno": 63
+        },
+        {
+          "name": "render_overlay",
+          "lineno": 80
+        },
+        {
+          "name": "export_png",
+          "lineno": 107
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "_maybe_decay",
+        "addWeighted",
+        "all",
+        "applyColorMap",
+        "arange",
+        "astype",
+        "clip",
+        "copy",
+        "exp",
+        "float",
+        "imwrite",
+        "int",
+        "max",
+        "merge",
+        "meshgrid",
+        "min",
+        "percentile",
+        "render_overlay",
+        "resize",
+        "round",
+        "time",
+        "zeros"
+      ]
+    },
+    {
+      "path": "src\\pipeline\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\pipeline\\frame_result.py",
+      "hash": "93a155d3ad50",
+      "loc": 1,
+      "imports": [
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Dict",
+            "Any"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "FrameResult",
+          "lineno": 7
+        }
+      ],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\scoring\\__init__.py",
+      "hash": "e3b0c44298fc",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\utils\\__init__.py",
+      "hash": "45026ded79cd",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "video_analyzer",
+          "names": [
+            "VideoAnalyzer",
+            "VideoInfo",
+            "AnalysisResult"
+          ]
+        },
+        {
+          "module": "performance_profiler",
+          "names": [
+            "PerformanceProfiler"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\utils\\performance_profiler.py",
+      "hash": "009d07b5ac77",
+      "loc": 7,
+      "imports": [
+        "logging",
+        "numpy",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "collections",
+          "names": [
+            "defaultdict"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Dict",
+            "List"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "PerformanceProfiler",
+          "lineno": 14
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 17
+        },
+        {
+          "name": "get_report",
+          "lineno": 21
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "append",
+        "defaultdict",
+        "getLogger",
+        "items",
+        "join",
+        "len",
+        "max",
+        "mean",
+        "median",
+        "min",
+        "percentile",
+        "sorted"
+      ]
+    },
+    {
+      "path": "src\\utils\\video_analyzer.py",
+      "hash": "83b17ba84f1c",
+      "loc": 11,
+      "imports": [
+        "cv2",
+        "json",
+        "numpy",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass",
+            "asdict"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "List",
+            "Dict",
+            "Optional",
+            "Callable"
+          ]
+        },
+        {
+          "module": "collections",
+          "names": [
+            "defaultdict"
+          ]
+        },
+        {
+          "module": "src.capture.fps_counter",
+          "names": [
+            "FPSCounter"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "VideoInfo",
+          "lineno": 19
+        },
+        {
+          "name": "AnalysisResult",
+          "lineno": 49
+        },
+        {
+          "name": "VideoAnalyzer",
+          "lineno": 72
+        }
+      ],
+      "functions": [
+        {
+          "name": "from_video",
+          "lineno": 29
+        },
+        {
+          "name": "to_dict",
+          "lineno": 68
+        },
+        {
+          "name": "__init__",
+          "lineno": 83
+        },
+        {
+          "name": "analyze_video",
+          "lineno": 90
+        },
+        {
+          "name": "_annotate_frame",
+          "lineno": 203
+        },
+        {
+          "name": "_save_detections",
+          "lineno": 245
+        },
+        {
+          "name": "_print_result",
+          "lineno": 254
+        },
+        {
+          "name": "compare_configs",
+          "lineno": 267
+        },
+        {
+          "name": "batch_analyze",
+          "lineno": 314
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "AnalysisResult",
+        "FPSCounter",
+        "Path",
+        "VideoCapture",
+        "_annotate_frame",
+        "_print_result",
+        "_save_detections",
+        "analyze_video",
+        "append",
+        "asdict",
+        "circle",
+        "cls",
+        "compare_configs",
+        "copy",
+        "destroyAllWindows",
+        "dump",
+        "from_video",
+        "get",
+        "get_stats",
+        "imshow",
+        "imwrite",
+        "int",
+        "items",
+        "len",
+        "mkdir",
+        "open",
+        "ord",
+        "perf_counter",
+        "print",
+        "processing_callback",
+        "putText",
+        "read",
+        "release",
+        "sorted",
+        "str",
+        "to_dict",
+        "update",
+        "waitKey"
+      ]
+    },
+    {
+      "path": "src\\vision\\__init__.py",
+      "hash": "1668bb9eb6a7",
+      "loc": 1,
+      "imports": [],
+      "from_imports": [
+        {
+          "module": "motion_detector",
+          "names": [
+            "MotionDetector",
+            "MotionConfig",
+            "MotionEvent"
+          ]
+        },
+        {
+          "module": "dart_impact_detector",
+          "names": [
+            "DartImpactDetector",
+            "DartDetectorConfig",
+            "DartImpact",
+            "FieldMapper",
+            "FieldMapperConfig"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": []
+    },
+    {
+      "path": "src\\vision\\dart_impact_detector.py",
+      "hash": "ad69c0c69ba9",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "List",
+            "Tuple"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "collections",
+          "names": [
+            "deque"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "replace"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "DartCandidate",
+          "lineno": 22
+        },
+        {
+          "name": "DartImpact",
+          "lineno": 35
+        },
+        {
+          "name": "DartDetectorConfig",
+          "lineno": 46
+        },
+        {
+          "name": "DartImpactDetector",
+          "lineno": 149
+        },
+        {
+          "name": "FieldMapperConfig",
+          "lineno": 463
+        },
+        {
+          "name": "FieldMapper",
+          "lineno": 482
+        }
+      ],
+      "functions": [
+        {
+          "name": "apply_detector_preset",
+          "lineno": 142
+        },
+        {
+          "name": "__init__",
+          "lineno": 152
+        },
+        {
+          "name": "detect_dart",
+          "lineno": 166
+        },
+        {
+          "name": "_is_in_cooldown",
+          "lineno": 232
+        },
+        {
+          "name": "_preprocess_motion_mask",
+          "lineno": 248
+        },
+        {
+          "name": "_find_dart_shapes",
+          "lineno": 267
+        },
+        {
+          "name": "_is_same_position",
+          "lineno": 432
+        },
+        {
+          "name": "_reset_tracking",
+          "lineno": 447
+        },
+        {
+          "name": "get_confirmed_impacts",
+          "lineno": 452
+        },
+        {
+          "name": "clear_impacts",
+          "lineno": 456
+        },
+        {
+          "name": "__post_init__",
+          "lineno": 476
+        },
+        {
+          "name": "__init__",
+          "lineno": 489
+        },
+        {
+          "name": "point_to_score",
+          "lineno": 495
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "Canny",
+        "DartCandidate",
+        "DartDetectorConfig",
+        "DartImpact",
+        "FieldMapperConfig",
+        "GaussianBlur",
+        "_find_dart_shapes",
+        "_is_in_cooldown",
+        "_is_same_position",
+        "_preprocess_motion_mask",
+        "_reset_tracking",
+        "abs",
+        "append",
+        "arcLength",
+        "arctan2",
+        "boundingRect",
+        "clear",
+        "clip",
+        "contourArea",
+        "convexHull",
+        "copy",
+        "count_nonzero",
+        "cvtColor",
+        "degrees",
+        "deque",
+        "dict",
+        "findContours",
+        "float",
+        "fromiter",
+        "get",
+        "getLogger",
+        "info",
+        "int",
+        "len",
+        "lower",
+        "max",
+        "moments",
+        "nonzero",
+        "replace",
+        "sort",
+        "sqrt",
+        "threshold"
+      ]
+    },
+    {
+      "path": "src\\vision\\motion_detector.py",
+      "hash": "5c5514f3b7db",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "logging",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "typing",
+          "names": [
+            "Optional",
+            "Tuple",
+            "Callable",
+            "Any"
+          ]
+        },
+        {
+          "module": "dataclasses",
+          "names": [
+            "dataclass"
+          ]
+        },
+        {
+          "module": "collections",
+          "names": [
+            "deque"
+          ]
+        }
+      ],
+      "classes": [
+        {
+          "name": "MotionEvent",
+          "lineno": 19
+        },
+        {
+          "name": "MotionConfig",
+          "lineno": 30
+        },
+        {
+          "name": "MotionDetector",
+          "lineno": 49
+        }
+      ],
+      "functions": [
+        {
+          "name": "__init__",
+          "lineno": 60
+        },
+        {
+          "name": "detect_motion",
+          "lineno": 85
+        },
+        {
+          "name": "_extract_motion_event",
+          "lineno": 131
+        },
+        {
+          "name": "gate_processing",
+          "lineno": 181
+        },
+        {
+          "name": "get_motion_history",
+          "lineno": 213
+        },
+        {
+          "name": "is_motion_recent",
+          "lineno": 217
+        },
+        {
+          "name": "get_stats",
+          "lineno": 225
+        },
+        {
+          "name": "reset",
+          "lineno": 236
+        }
+      ],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "MotionConfig",
+        "MotionEvent",
+        "_extract_motion_event",
+        "append",
+        "apply",
+        "boundingRect",
+        "clear",
+        "contourArea",
+        "countNonZero",
+        "count_nonzero",
+        "createBackgroundSubtractorMOG2",
+        "deque",
+        "detect_motion",
+        "findContours",
+        "getLogger",
+        "getStructuringElement",
+        "info",
+        "int",
+        "is_motion_recent",
+        "list",
+        "max",
+        "moments",
+        "morphologyEx",
+        "process_func"
+      ]
+    },
+    {
+      "path": "tests\\test_aruco_detection.py",
+      "hash": "95b9f3502709",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "numpy"
+      ],
+      "from_imports": [],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArucoDetector",
+        "DetectorParameters",
+        "VideoCapture",
+        "destroyAllWindows",
+        "detectMarkers",
+        "drawDetectedMarkers",
+        "getPredefinedDictionary",
+        "imshow",
+        "len",
+        "ord",
+        "print",
+        "putText",
+        "read",
+        "release",
+        "waitKey"
+      ]
+    },
+    {
+      "path": "tests\\test_integrated_pipeline.py",
+      "hash": "9ebc535546c5",
+      "loc": 10,
+      "imports": [
+        "cv2",
+        "sys",
+        "time"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "src.calibration",
+          "names": [
+            "ROIProcessor",
+            "CalibrationManager",
+            "ROIConfig"
+          ]
+        },
+        {
+          "module": "src.vision",
+          "names": [
+            "MotionDetector",
+            "MotionConfig",
+            "DartImpactDetector",
+            "DartDetectorConfig"
+          ]
+        },
+        {
+          "module": "src.capture",
+          "names": [
+            "FPSCounter"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "test_integrated_pipeline",
+          "lineno": 18
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "CalibrationManager",
+        "DartDetectorConfig",
+        "DartImpactDetector",
+        "FPSCounter",
+        "MotionConfig",
+        "MotionDetector",
+        "Path",
+        "ROIConfig",
+        "ROIProcessor",
+        "VideoCapture",
+        "addWeighted",
+        "append",
+        "circle",
+        "cvtColor",
+        "destroyAllWindows",
+        "detect_dart",
+        "detect_motion",
+        "enumerate",
+        "get_confirmed_impacts",
+        "get_homography",
+        "get_stats",
+        "imshow",
+        "insert",
+        "isOpened",
+        "is_valid",
+        "len",
+        "ord",
+        "print",
+        "putText",
+        "read",
+        "release",
+        "resize",
+        "set_homography_from_matrix",
+        "str",
+        "test_integrated_pipeline",
+        "update",
+        "waitKey",
+        "warp_roi"
+      ]
+    },
+    {
+      "path": "tests\\test_roi_calibration.py",
+      "hash": "a6b4f1f9ec11",
+      "loc": 1,
+      "imports": [
+        "cv2",
+        "numpy",
+        "sys"
+      ],
+      "from_imports": [
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "src.calibration",
+          "names": [
+            "ROIProcessor",
+            "CalibrationManager",
+            "ROIConfig"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "test_manual_calibration",
+          "lineno": 16
+        },
+        {
+          "name": "mouse_callback",
+          "lineno": 36
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "CalibrationManager",
+        "Path",
+        "ROIConfig",
+        "ROIProcessor",
+        "VideoCapture",
+        "append",
+        "circle",
+        "clear",
+        "copy",
+        "destroyAllWindows",
+        "enumerate",
+        "get_homography",
+        "imshow",
+        "insert",
+        "len",
+        "line",
+        "manual_calibration",
+        "namedWindow",
+        "ord",
+        "print",
+        "putText",
+        "range",
+        "read",
+        "release",
+        "setMouseCallback",
+        "set_homography_from_matrix",
+        "str",
+        "test_manual_calibration",
+        "waitKey",
+        "warp_roi"
+      ]
+    },
+    {
+      "path": "tests\\test_video_analysis.py",
+      "hash": "ba8d9afc597e",
+      "loc": 1,
+      "imports": [
+        "cv2"
+      ],
+      "from_imports": [
+        {
+          "module": "src.utils.video_analyzer",
+          "names": [
+            "VideoAnalyzer"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "create_motion_detector",
+          "lineno": 9
+        },
+        {
+          "name": "test_mog2_parameters",
+          "lineno": 17
+        },
+        {
+          "name": "make_callback",
+          "lineno": 36
+        },
+        {
+          "name": "callback",
+          "lineno": 40
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "VideoAnalyzer",
+        "apply",
+        "batch_analyze",
+        "countNonZero",
+        "createBackgroundSubtractorMOG2",
+        "create_motion_detector",
+        "findContours",
+        "getStructuringElement",
+        "int",
+        "make_callback",
+        "max",
+        "min",
+        "moments",
+        "morphologyEx",
+        "test_mog2_parameters"
+      ]
+    },
+    {
+      "path": "tools\\test_aruco_quad.py",
+      "hash": "37346e566794",
+      "loc": 1,
+      "imports": [
+        "argparse",
+        "cv2",
+        "numpy"
+      ],
+      "from_imports": [
+        {
+          "module": "src.calibration.aruco_quad_calibrator",
+          "names": [
+            "ArucoQuadCalibrator"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [],
+      "has_main_guard": false,
+      "calls_in_module": [
+        "ArgumentParser",
+        "ArucoQuadCalibrator",
+        "VideoCapture",
+        "_centers_from_corners",
+        "add_argument",
+        "calibrate_from_frame",
+        "destroyAllWindows",
+        "detect",
+        "draw_debug",
+        "imshow",
+        "len",
+        "ord",
+        "parse_args",
+        "putText",
+        "read",
+        "release",
+        "set",
+        "waitKey"
+      ]
+    },
+    {
+      "path": "tools\\validate_configs.py",
+      "hash": "f0cda1ef0e86",
+      "loc": 1,
+      "imports": [
+        "argparse",
+        "glob",
+        "json",
+        "os",
+        "sys",
+        "yaml"
+      ],
+      "from_imports": [
+        {
+          "module": "__future__",
+          "names": [
+            "annotations"
+          ]
+        },
+        {
+          "module": "pathlib",
+          "names": [
+            "Path"
+          ]
+        },
+        {
+          "module": "typing",
+          "names": [
+            "Dict",
+            "List",
+            "Tuple"
+          ]
+        },
+        {
+          "module": "jsonschema",
+          "names": [
+            "Draft2020Validator",
+            "exceptions"
+          ]
+        }
+      ],
+      "classes": [],
+      "functions": [
+        {
+          "name": "load_json",
+          "lineno": 37
+        },
+        {
+          "name": "load_yaml",
+          "lineno": 41
+        },
+        {
+          "name": "infer_schema_path",
+          "lineno": 45
+        },
+        {
+          "name": "validate_one",
+          "lineno": 51
+        },
+        {
+          "name": "expand_targets",
+          "lineno": 79
+        },
+        {
+          "name": "main",
+          "lineno": 95
+        }
+      ],
+      "has_main_guard": true,
+      "calls_in_module": [
+        "ArgumentParser",
+        "Draft2020Validator",
+        "Path",
+        "add",
+        "add_argument",
+        "append",
+        "exists",
+        "exit",
+        "expand_targets",
+        "extend",
+        "glob",
+        "infer_schema_path",
+        "iter_errors",
+        "join",
+        "load",
+        "load_json",
+        "load_yaml",
+        "main",
+        "open",
+        "parse_args",
+        "print",
+        "resolve",
+        "safe_load",
+        "set",
+        "sorted",
+        "str",
+        "validate_one"
+      ]
+    }
+  ]
+}
