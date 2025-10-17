@@ -9,6 +9,7 @@ import cv2
 import threading
 import queue
 import time
+import numpy as np
 from pathlib import Path
 import logging
 from typing import Optional, Tuple, Callable
@@ -39,6 +40,10 @@ class CameraConfig:
     contrast: Optional[float] = None
     sharpness: Optional[float] = None
 
+    # ✨ Neu: Playback/Sync (nur für Datei-Quellen)
+    video_sync: str = "fps"  # "off" | "fps" | "msec"
+    playback: float = 1.0  # 1.0 = Echtzeit, 0.5 halb, 2.0 doppelt
+
 
 class ThreadedCamera:
     """
@@ -67,6 +72,11 @@ class ThreadedCamera:
         self.frames_dropped = 0
         self.reconnect_attempts = 0
 
+        self._is_video_file = isinstance(config.src, str)  # int=Webcam, str=Datei
+        self._src_fps = 0.0
+        self._next_vsync = None
+        self._last_pos_msec = None
+
         # Initialize capture
         self._init_capture()
 
@@ -78,6 +88,12 @@ class ThreadedCamera:
             if not self.capture.isOpened():
                 logger.error(f"Failed to open camera: {self.config.src}")
                 return False
+
+            if self._is_video_file:
+                fps = float(self.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+                if not np.isfinite(fps) or fps <= 0:
+                    fps = 30.0  # Fallback
+                self._src_fps = fps
 
             # Configure camera properties
             self.capture.set(cv2.CAP_PROP_BUFFERSIZE, self.config.buffer_size)
@@ -242,6 +258,30 @@ class ThreadedCamera:
                         self.frames_dropped += 1
                     except queue.Empty:
                         pass
+
+                # --- VSYNC nur für Datei-Quellen ---
+                if self._is_video_file and self.config.video_sync != "off":
+                    if self.config.video_sync == "fps":
+                        period = (1.0 / max(self._src_fps, 1e-6)) / max(self.config.playback, 1e-6)
+                        now = time.perf_counter()
+                        if self._next_vsync is None:
+                            self._next_vsync = now + period
+                        else:
+                            sleep_s = self._next_vsync - now
+                            if sleep_s > 0:
+                                time.sleep(sleep_s)
+                            # robust gegen Drift: nicht “aufholen”, eher neu setzen
+                            self._next_vsync = time.perf_counter() + period
+
+                    else:  # "msec" -> nutze Dateizeitstempel für variable FPS
+                        pos_ms = float(self.capture.get(cv2.CAP_PROP_POS_MSEC) or 0.0)
+                        if self._last_pos_msec is None:
+                            self._last_pos_msec = pos_ms
+                        dt_ms = max(0.0, pos_ms - self._last_pos_msec)
+                        self._last_pos_msec = pos_ms
+                        target_s = (dt_ms / 1000.0) / max(self.config.playback, 1e-6)
+                        if target_s > 0:
+                            time.sleep(target_s)
 
                 # Add new frame to queue
                 try:

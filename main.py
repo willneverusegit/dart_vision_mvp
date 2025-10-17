@@ -192,6 +192,10 @@ class DartVisionApp:
         self.total_darts = 0
         self.stats = StatsAccumulator()
 
+        self.src_is_video = False
+        self.src_fps = 0.0
+        self._next_vsync = None
+        self._last_pos_msec = None
 
     def _hough_refine_center(self, roi_bgr) -> bool:
         """
@@ -561,14 +565,30 @@ class DartVisionApp:
 
         # Camera
         cam_src = self.args.video if self.args.video else self.args.webcam
-        cam_cfg = CameraConfig(src=cam_src, max_queue_size=5, buffer_size=1,
-                               width=self.args.width, height=self.args.height)
+        is_video_file = isinstance(cam_src, str)
+
+        cam_cfg = CameraConfig(
+            src=cam_src,
+            max_queue_size=5,
+            buffer_size=1,
+            width=self.args.width,
+            height=self.args.height,
+            fps=getattr(self.args, "fps", None),
+            video_sync=(self.args.video_sync if is_video_file else "off"),
+            playback=(self.args.playback if is_video_file else 1.0),
+        )
         self.camera = ThreadedCamera(cam_cfg)
         if not self.camera.start():
             logger.error("Camera start failed.")
             return False
 
-          # --- Heatmap config (optional) ---
+        # Optional: nur fürs Log (die echte Steuerung macht ThreadedCamera)
+        if is_video_file:
+            fps = float(self.camera.capture.get(cv2.CAP_PROP_FPS) or 0.0)
+            if not np.isfinite(fps) or fps <= 0:
+                fps = 30.0
+            logger.info(f"[VIDEO] nominal FPS={fps:.3f}, sync={self.args.video_sync}, speed={self.args.playback:.2f}x")
+        # --- Heatmap config (optional) ---
 
         try:
             overlay_cfg_path = Path("src/overlay/overlay.yaml")
@@ -1249,11 +1269,46 @@ class DartVisionApp:
                 if self.paused:
                     cv2.putText(disp, "PAUSED", (500, 50), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,165,255), 3)
 
+                # --- vor dem waitKeyEx: optional drosseln, wenn Video ---
+                if self.src_is_video and self.args.video_sync != "off":
+                    if self.args.video_sync == "fps":
+                        # einfache FPS-basierte Taktung
+                        period = (1.0 / max(self.src_fps, 1e-6)) / max(self.args.playback, 1e-6)
+                        now = time.perf_counter()
+                        if self._next_vsync is None:
+                            self._next_vsync = now + period
+                        else:
+                            sleep_s = self._next_vsync - now
+                            if sleep_s > 0:
+                                time.sleep(sleep_s)
+                            # robust gegen “nachhinken”: nicht mehr als 2 Perioden nachschieben
+                            self._next_vsync = max(self._next_vsync + period, now + period)
+                    else:  # "msec" -> nutze Dateizeitstempel
+                        try:
+                            pos_ms = float(self.camera.capture.get(cv2.CAP_PROP_POS_MSEC))
+                        except Exception:
+                            pos_ms = None
+                        if pos_ms is not None and pos_ms >= 0:
+                            if self._last_pos_msec is None:
+                                self._last_pos_msec = pos_ms
+                            dt_ms = max(0.0, pos_ms - self._last_pos_msec)
+                            self._last_pos_msec = pos_ms
+                            # gewünschte Wartezeit abzüglich grober Processing-Zeit (optional)
+                            target_s = (dt_ms / 1000.0) / max(self.args.playback, 1e-6)
+                            if target_s > 0:
+                                time.sleep(target_s)
+
+                # jetzt die Tasten abfragen (bei Video gerne ein paar ms Blockzeit nutzen)
+                wait_delay = 1
+                if self.src_is_video and self.args.video_sync == "off":
+                    # wenn "off", trotzdem minimal blocken damit die GUI reagiert
+                    wait_delay = 1
+                raw_key = cv2.waitKeyEx(wait_delay)
+                key = raw_key & 0xFF
+
                 cv2.imshow("Dart Vision MVP", disp)
 
-                # 1) Key holen (Extended Keys für Pfeile!)
-                raw_key = cv2.waitKeyEx(1)
-                key = raw_key & 0xFF  # nur für 'normale' Tasten wie 'q','s',...
+
                 # 2) Debug: zuletzt empfangenen Key anzeigen
                 if raw_key != -1:
                     logger.debug(f"raw_key={raw_key} (0x{raw_key:08X}) masked={key}")
@@ -1572,6 +1627,10 @@ def main():
                    help="Enable CLAHE on grayscale for HUD/detection")
     p.add_argument("--detector-preset", type=str, choices=["aggressive", "balanced", "stable"],
                    default="balanced", help="Dart detector preset")
+    p.add_argument("--video-sync", choices=["off", "fps", "msec"], default="fps",
+                   help="Playback-Synchronisation für Datei-Input: 'off' (so schnell wie möglich), 'fps' (per CAP_PROP_FPS), 'msec' (per Frame-Timestamp)")
+    p.add_argument("--playback", type=float, default=1.0,
+                   help="Abspielgeschwindigkeit für Datei-Input (1.0 = Echtzeit, 0.5 = halb so schnell, 2.0 = doppelt so schnell)")
 
     args = p.parse_args()
     DartVisionApp(args).run()
