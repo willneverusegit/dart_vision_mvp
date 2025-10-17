@@ -20,11 +20,5 @@ scale:
   rect_width_mm: 400.0
   rect_height_mm: 400.0
 image_size:
-- 478
-- 850
-overlay_adjust:
-  rotation_deg: 10.0
-  scale: 0.9900990099009901
-  center_dx_px: 2.0
-  center_dy_px: -4.0
-  r_outer_double_px: 158.41584158415841
+- 718
+- 712
