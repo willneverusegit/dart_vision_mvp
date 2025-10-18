@@ -1,7 +1,50 @@
 # Pydantic models for board mapping config.
 from __future__ import annotations
 from pydantic import BaseModel, Field, validator
-from typing import List
+from typing import List, Tuple
+
+# --- Unified calibration schema additions ---
+class Homography(BaseModel):
+    """3x3 homography matrix in row-major order"""
+    H: List[List[float]] = Field(..., min_items=3, max_items=3)
+
+    @validator("H")
+    def _shape(cls, v):
+        if any(len(row) != 3 for row in v):
+            raise ValueError("Homography.H must be 3x3")
+        return v
+
+
+class Metrics(BaseModel):
+    """Derived/calibration metrics"""
+    center_px: Tuple[float, float]  # (cx, cy) in ROI/canvas pixels
+    roi_board_radius: float         # r_outer_double_px in the ROI frame
+
+
+class OverlayAdjust(BaseModel):
+    """Overlay adjustments applied after base calibration"""
+    rotation_deg: float = 0.0
+    r_outer_double_px: float
+    center_dx_px: float = 0.0
+    center_dy_px: float = 0.0
+
+
+class ROIAdjust(BaseModel):
+    """ROI affine adjustment prior to overlay/mapper (acting on the homography output)"""
+    tx_px: float = 0.0
+    ty_px: float = 0.0
+    scale: float = 1.0
+    rot_deg: float = 0.0
+
+
+class UnifiedCalibration(BaseModel):
+    """Single source of truth for calibration persistence."""
+    homography: Homography
+    metrics: Metrics
+    overlay_adjust: OverlayAdjust
+    roi_adjust: ROIAdjust
+# --- end additions ---
+
 
 class Angles(BaseModel):
     theta0_deg: float = 90.0
