@@ -283,6 +283,9 @@ class DartVisionApp:
             self._sync_mapper_from_unified()
             self._roi_annulus_mask = None
             self._ensure_roi_annulus_mask()
+            if self.dart is not None and self.board_mapper is not None:
+                self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
+                self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
 
     def _save_calibration_unified(self, calib_path: Path | None = None):
         """
@@ -907,6 +910,12 @@ class DartVisionApp:
 
                 logger.info("[BOARD] Mapper init (unified) | rOD=%.1f px, rot=%.2f°",
                             self.board_mapper.calib.r_outer_double_px, self.board_mapper.calib.rotation_deg)
+                # --- After mapper init: provide board center to dart detector config ---
+                if hasattr(self, "dart") and self.dart is not None and self.board_mapper is not None:
+                    self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
+                    self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
+                    logger.debug(
+                        f"[DART] Cal center propagated: ({self.dart.config.cal_cx:.1f}, {self.dart.config.cal_cy:.1f})")
             else:
                 # Legacy-Fallback (nur wenn wirklich keine UC vorhanden ist)
                 if self.roi_board_radius and self.roi_board_radius > 0:
@@ -1413,6 +1422,9 @@ class DartVisionApp:
             self._sync_mapper_from_unified()
             self._roi_annulus_mask = None
             self._ensure_roi_annulus_mask()
+            if self.dart is not None and self.board_mapper is not None:
+                self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
+                self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
 
         except Exception:
             # Wenn das fehlschlägt, läuft Legacy ohne Unified weiter.
@@ -1485,6 +1497,9 @@ class DartVisionApp:
                     # nach jeder erfolgreichen Geometrie-Aktualisierung:
                     self._roi_annulus_mask = None
                     self._ensure_roi_annulus_mask()
+                    if self.dart is not None and self.board_mapper is not None:
+                        self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
+                        self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
 
                     # optional: nicht jedes Mal speichern – hier ok, damit’s persistent ist
                     save_unified_calibration(self.calib_path, self.uc)
@@ -1874,6 +1889,9 @@ class DartVisionApp:
                                         self._sync_mapper_from_unified()
                                         self._roi_annulus_mask = None
                                         self._ensure_roi_annulus_mask()
+                                        if self.dart is not None and self.board_mapper is not None:
+                                            self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
+                                            self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
                                     # Persistenz
                                     save_unified_calibration(self.calib_path, self.uc)
                                     logger.info(f"[HoughRings] cx={cx:.1f} cy={cy:.1f} rOD={r_out:.1f}")

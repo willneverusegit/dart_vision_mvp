@@ -11,8 +11,9 @@ Features:
 import cv2
 import numpy as np
 import logging
+import math
 from typing import Optional, List, Tuple
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from collections import deque
 
 logger = logging.getLogger(__name__)
@@ -110,12 +111,22 @@ class DartDetectorConfig:
     tip_canny_lo: int = 60
     tip_canny_hi: int = 180
 
+    motion_adaptive: bool = True
+    motion_otsu_bias: int = +8  # Otsu + Bias
+    motion_min_area_px: int = 24  # nach Morphologie erneut prüfen
+    morph_open_ksize: int = 3
+    morph_close_ksize: int = 5
+    motion_min_white_pct: float = 0.02  # 0.02% des ROI reichen als Aktivität
+
 
 from dataclasses import replace
 
 DETECTOR_PRESETS = {
         # finds more, toleranter, etwas mehr False Positives möglich
         "aggressive": dict(
+            motion_otsu_bias=+4,
+            morph_open_ksize=3,
+            morph_close_ksize=5,
             min_area=6, max_area=1600,
             min_aspect_ratio=0.25, max_aspect_ratio=3.5,
             min_solidity=0.08, max_solidity=0.98,
@@ -162,6 +173,32 @@ DETECTOR_PRESETS = {
             candidate_history_size=24, motion_mask_smoothing_kernel=7,
         ),
     }
+def _preprocess_motion_mask(self, motion_mask: np.ndarray) -> np.ndarray:
+    """Adaptive Binarisierung + Morphologie für stabilere Konturen."""
+    mm = motion_mask
+    if mm.ndim == 3:
+        mm = cv2.cvtColor(mm, cv2.COLOR_BGR2GRAY)
+    if not self.config.motion_adaptive:
+        return mm
+
+    # Otsu + Bias
+    _t, _ = cv2.threshold(mm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    t = int(np.clip(_t + self.config.motion_otsu_bias, 0, 255))
+    _, bw = cv2.threshold(mm, t, 255, cv2.THRESH_BINARY)
+
+    # Morph Open → Close
+    k1 = max(1, int(self.config.morph_open_ksize));  k1 += (k1 % 2 == 0)
+    k2 = max(1, int(self.config.morph_close_ksize)); k2 += (k2 % 2 == 0)
+    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN,  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k1, k1)))
+    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2)))
+
+    # Entferne sehr kleine Blobs (zusätzlich zu min_area/max_area im späteren Schritt)
+    num, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
+    for i in range(1, num):  # 0 ist Hintergrund
+        if stats[i, cv2.CC_STAT_AREA] < self.config.motion_min_area_px:
+            bw[labels == i] = 0
+
+    return bw.astype(np.uint8, copy=False)
 
 def apply_detector_preset(cfg: DartDetectorConfig, name: str) -> DartDetectorConfig:
         name = (name or "").lower()
@@ -204,6 +241,12 @@ class DartImpactDetector:
 
         # Pre-process motion mask to stabilise contours
         processed_mask = self._preprocess_motion_mask(motion_mask)
+        # Quick gate: sehr wenig weiße Pixel? → sparen
+        if motion_mask is not None:
+            white_pct = 100.0 * (float(np.count_nonzero(motion_mask)) / float(motion_mask.size))
+            if white_pct < getattr(self.config, "motion_min_white_pct", 0.02):
+                self._reset_tracking()
+                return None
 
         # Find dart-like shapes
         candidates = self._find_dart_shapes(frame, processed_mask, frame_index, timestamp)
@@ -490,6 +533,41 @@ class DartImpactDetector:
                 extent = extent,
                 edge_density = edge_density
             )
+
+            # --- PCA-Orientierung (Dominantrichtung im Bounding-ROI) ---
+            roi_full = frame[y:y + h, x:x + w]
+            if roi_full.size == 0:
+                continue
+            roi_gray2 = cv2.cvtColor(roi_full, cv2.COLOR_BGR2GRAY) if roi_full.ndim == 3 else roi_full
+            edges2 = cv2.Canny(roi_gray2, 60, 180)
+            ys2, xs2 = np.nonzero(edges2)
+
+            orient_ok = True
+            have_cal_center = hasattr(self.config, "cal_cx") and hasattr(self.config, "cal_cy")
+            if xs2.size >= 12 and have_cal_center:
+                pts2 = np.column_stack([xs2.astype(np.float32), ys2.astype(np.float32)])
+                mean2 = pts2.mean(axis=0)
+                pts2 -= mean2
+                C2 = np.dot(pts2.T, pts2) / max(len(pts2), 1)
+                _, evecs2 = np.linalg.eigh(C2)  # kleine, große Eigenwerte → letzter Vektor ist Hauptachse
+                v = evecs2[:, 1]
+                v = v / (np.linalg.norm(v) + 1e-6)
+
+                # radialer Vektor: vom Boardzentrum (ROI) zum Kandidaten
+                radial_dx = float(cx) - float(self.config.cal_cx)
+                radial_dy = float(cy) - float(self.config.cal_cy)
+                nr = math.hypot(radial_dx, radial_dy)
+                if nr > 1e-3:  # nur prüfen, wenn sinnvoller Abstand existiert
+                    vx, vy = float(v[0]), float(v[1])
+                    dot = abs(vx * radial_dx + vy * radial_dy)
+                    nv = math.hypot(vx, vy) + 1e-6
+                    cosang = np.clip(dot / (nv * nr), 0.0, 1.0)
+                    ang = math.degrees(math.acos(cosang))
+                    if ang > getattr(self.config, "radial_angle_max_deg", 28.0):
+                        orient_ok = False
+            # wenn kein cal_cx/cy gesetzt → Gate überspringen (orient_ok bleibt True)
+            if not orient_ok:
+                continue
 
             candidates.append(candidate)
 
