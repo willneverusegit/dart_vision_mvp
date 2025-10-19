@@ -41,6 +41,9 @@ class DartImpact:
     confirmation_count: int
     timestamp: float
     refine_score: Optional[float] = None
+    # NEU (optional, aber sehr hilfreich):
+    raw_position: Optional[Tuple[int, int]] = None  # vor Tip-Refine
+    refined_position: Optional[Tuple[int, int]] = None  # nach Tip-Refine
 
 
 @dataclass
@@ -97,6 +100,15 @@ class DartDetectorConfig:
     refine_hough_thresh: int = 30  # Accumulator-Schwelle
     refine_min_line_len: int = 10
     refine_max_line_gap: int = 4
+    # Tip refine (A-2b)
+    tip_refine_enabled: bool = True
+    tip_roi_px: int = 36  # Größe des quadratischen ROI um den Kandidaten
+    tip_search_px: int = 14  # maximale Weglänge vom Zentrum (px)
+    tip_max_shift_px: int = 16  # harte Kappe für Verschiebung
+    tip_edge_weight: float = 0.6  # Gewicht Kante vs. Dunkelheit
+    tip_dark_weight: float = 0.4  # (edge_weight + dark_weight = 1.0)
+    tip_canny_lo: int = 60
+    tip_canny_hi: int = 180
 
 
 from dataclasses import replace
@@ -237,6 +249,21 @@ class DartImpactDetector:
             # (optional) rs weiterreichen/später loggen:
             # best_candidate.refine_score = float(rs)
 
+        # >>> A-2b: Spitzen-Refine – Position vorsichtig nachziehen
+        if getattr(self.config, "tip_refine_enabled", True):
+            rx, ry = self._refine_tip_position(frame, best_candidate.position, debug=False)
+            best_candidate = DartCandidate(
+                position=(int(rx), int(ry)),
+                area=best_candidate.area,
+                confidence=best_candidate.confidence,
+                frame_index=best_candidate.frame_index,
+                timestamp=best_candidate.timestamp,
+                aspect_ratio=best_candidate.aspect_ratio,
+                solidity=best_candidate.solidity,
+                extent=best_candidate.extent,
+                edge_density=best_candidate.edge_density
+            )
+
         # Check temporal stability (nur wenn refine bestanden)
         if self._is_same_position(best_candidate, self.current_candidate):
             self.confirmation_count += 1
@@ -247,13 +274,14 @@ class DartImpactDetector:
         # Check if confirmed
         if self.confirmation_count >= self.config.confirmation_frames:
             impact = DartImpact(
-                position=best_candidate.position,
+                position=(best_candidate.position[0], best_candidate.position[1]),  # refined
                 confidence=best_candidate.confidence,
                 first_detected_frame=self.current_candidate.frame_index,
                 confirmed_frame=frame_index,
                 confirmation_count=self.confirmation_count,
                 timestamp=timestamp,
-                # optional:
+                raw_position=(self.current_candidate.position if hasattr(self.current_candidate, "position") else None),
+                refined_position=(best_candidate.position[0], best_candidate.position[1]),
                 refine_score=float(rs) if 'rs' in locals() else None,
             )
 
@@ -528,6 +556,98 @@ class DartImpactDetector:
             cv2.imshow("Refine-ROI", dbg)
 
         return float(score)
+
+    def _refine_tip_position(
+            self,
+            frame_bgr: np.ndarray,
+            center_xy: tuple[int, int],
+            debug: bool = False
+    ) -> tuple[int, int]:
+        """
+        Verfeinert die Impact-Position auf die Dartspitze.
+        Nutzt Kanten im Mini-ROI, schätzt Hauptorientierung (PCA),
+        prüft beide Richtungen (±v) und nimmt das Ende mit mehr Kante + dunklerem Patch.
+        """
+        cx, cy = int(center_xy[0]), int(center_xy[1])
+        h, w = frame_bgr.shape[:2]
+        R = int(self.config.tip_roi_px)
+        x0 = max(0, cx - R // 2);
+        y0 = max(0, cy - R // 2)
+        x1 = min(w, cx + R // 2);
+        y1 = min(h, cy + R // 2)
+        roi = frame_bgr[y0:y1, x0:x1]
+        if roi.size == 0:
+            return cx, cy
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Canny(gray, self.config.tip_canny_lo, self.config.tip_canny_hi)
+
+        # --- PCA auf Kantenpixeln für Hauptorientierung ---
+        ys, xs = np.nonzero(edges)
+        if xs.size < 10:
+            return cx, cy
+
+        pts = np.column_stack([xs.astype(np.float32), ys.astype(np.float32)])
+        mean = pts.mean(axis=0)  # (mx, my) im ROI
+        pts_z = pts - mean
+        C = np.dot(pts_z.T, pts_z) / max(len(pts_z), 1)  # 2x2 Kovarianz
+        evals, evecs = np.linalg.eigh(C)  # sort unsorted: kleiner->größer
+        v = evecs[:, 1]  # Hauptachse (Eigenvektor für größte Eigenzahl)
+        v = v / (np.linalg.norm(v) + 1e-6)
+        # von ROI in Bildkoordinaten: v_x rechts positiv, v_y nach unten positiv
+        # zwei Kandidatsrichtungen: +v und -v
+        candidates = []
+        L = int(self.config.tip_search_px)
+        for sgn in (+1.0, -1.0):
+            vx, vy = (float(v[0]) * sgn, float(v[1]) * sgn)
+            # Probe entlang der Linie in N Schritten
+            N = L
+            xs_line = (mean[0] + np.linspace(1, N, N) * vx).astype(np.int32)
+            ys_line = (mean[1] + np.linspace(1, N, N) * vy).astype(np.int32)
+            mask = (xs_line >= 0) & (ys_line >= 0) & (xs_line < roi.shape[1]) & (ys_line < roi.shape[0])
+            xs_line, ys_line = xs_line[mask], ys_line[mask]
+            if xs_line.size == 0:
+                continue
+
+            # Kantenstärke am Ende (letzte 3 Pixel mitteln)
+            tail_idx = max(0, xs_line.size - 3)
+            edge_tail = float(edges[ys_line[tail_idx:], xs_line[tail_idx:]].mean()) / 255.0
+
+            # Dunkelheit am Ende (grau klein = dunkel)
+            dark_tail = 1.0 - float(gray[ys_line[tail_idx:], xs_line[tail_idx:]].mean()) / 255.0
+
+            score = self.config.tip_edge_weight * edge_tail + self.config.tip_dark_weight * dark_tail
+
+            # Endpunkt in Bildkoordinaten
+            end_x = int(x0 + xs_line[-1])
+            end_y = int(y0 + ys_line[-1])
+            candidates.append((score, end_x, end_y))
+
+        if not candidates:
+            return cx, cy
+
+        # Bester Endpunkt
+        candidates.sort(key=lambda t: t[0], reverse=True)
+        _, ex, ey = candidates[0]
+
+        # Verschiebung kappen
+        dx = np.clip(ex - cx, -self.config.tip_max_shift_px, self.config.tip_max_shift_px)
+        dy = np.clip(ey - cy, -self.config.tip_max_shift_px, self.config.tip_max_shift_px)
+        rx, ry = cx + int(dx), cy + int(dy)
+
+        if debug:
+            dbg = roi.copy()
+            # Lokales Koord. visual: ROI-Zentrum (cx,cy) → (cx-x0, cy-y0)
+            cv2.circle(dbg, (int(mean[0]), int(mean[1])), 3, (0, 255, 255), -1, cv2.LINE_AA)
+            # Linie ±v
+            p0 = (int(mean[0] - v[0] * L), int(mean[1] - v[1] * L))
+            p1 = (int(mean[0] + v[0] * L), int(mean[1] + v[1] * L))
+            cv2.line(dbg, p0, p1, (0, 255, 0), 1, cv2.LINE_AA)
+            cv2.circle(dbg, (ex - x0, ey - y0), 3, (0, 0, 255), -1, cv2.LINE_AA)
+            cv2.imshow("Tip-Refine ROI", dbg)
+
+        return int(rx), int(ry)
 
     def _is_same_position(
             self,

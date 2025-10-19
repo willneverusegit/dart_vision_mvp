@@ -166,6 +166,7 @@ class DartVisionApp:
         self.show_motion = False
         self.frame_count = 0
         self.session_start = time.time()
+        self.show_mask = False  # per Hotkey toggeln
 
         # HUD buffers (Glättung)
         self._hud_b = deque(maxlen=15)  # Brightness
@@ -175,6 +176,7 @@ class DartVisionApp:
         # Mapping/Scoring
         self.board_cfg: Optional[BoardConfig] = None
         self.board_mapper: Optional[BoardMapper] = None
+        self._roi_annulus_mask = None  # uint8 mask same size as ROI_SIZE, 0/255
 
         # Overlay-Mode (0=min, 1=rings, 2=full)
         self.overlay_mode = OVERLAY_ALIGN
@@ -213,6 +215,21 @@ class DartVisionApp:
         self.src_fps = 0.0
         self._next_vsync = None
         self._last_pos_msec = None
+
+    def _ensure_roi_annulus_mask(self):
+        """Build a static annulus mask in ROI coords (0..255) to ignore Netz/Hintergrund."""
+        if self._roi_annulus_mask is not None or self.board_mapper is None or self.board_cfg is None:
+            return
+        import numpy as np, cv2
+        h, w = ROI_SIZE[1], ROI_SIZE[0]
+        m = np.zeros((h, w), np.uint8)
+        cal = self.board_mapper.calib
+        r_out = int(round(cal.r_outer_double_px * 1.02))  # leicht großzügig
+        r_in = int(round(cal.r_outer_double_px * max(0.28, self.board_cfg.radii.r_bull_outer * 0.8)))
+        cx, cy = int(round(cal.cx)), int(round(cal.cy))
+        cv2.circle(m, (cx, cy), max(1, r_out), 255, -1)
+        cv2.circle(m, (cx, cy), max(1, r_in), 0, -1)
+        self._roi_annulus_mask = m
 
     def _update_uc_from_calibrator(self, H_base: np.ndarray,
                                    center_px: tuple[float, float],
@@ -264,6 +281,8 @@ class DartVisionApp:
         self.homography_eff = compute_effective_H(self.uc)
         if hasattr(self, "_sync_mapper_from_unified"):
             self._sync_mapper_from_unified()
+            self._roi_annulus_mask = None
+            self._ensure_roi_annulus_mask()
 
     def _save_calibration_unified(self, calib_path: Path | None = None):
         """
@@ -338,9 +357,9 @@ class DartVisionApp:
         if self.board_cfg is None or r_out <= 0:
             return True
         target = {
-            "D_in": self.board_cfg.radii.r_double_inner,  # ~0.93
-            "T_out": self.board_cfg.radii.r_triple_outer,  # ~0.62
-            "T_in": self.board_cfg.radii.r_triple_inner,  # ~0.55
+            "D_in": self.board_cfg.radii.r_double_inner,  # ~0.9
+            "T_out": self.board_cfg.radii.r_triple_outer,  # ~0.55
+            "T_in": self.board_cfg.radii.r_triple_inner,  # ~0.45
         }
         rs = np.array([float(c[2]) for c in circles if float(c[2]) < r_out], dtype=float)
         if rs.size == 0:
@@ -348,10 +367,11 @@ class DartVisionApp:
         ratios = rs / r_out
         ok = 0
         for r in target.values():
-            if np.min(np.abs(ratios - float(r))) < 0.07:  # 3% Toleranz
+            if np.min(np.abs(ratios - float(r))) < 0.1:  # 3% Toleranz
                 ok += 1
         return ok >= 2  # mindestens zwei „Treffer“
 
+    # LEGACY / DEBUG ONLY — replaced by _hough_refine_rings()
     def _hough_refine_center(self, roi_bgr) -> bool:
         """
         Findet den äußeren Doppelring als Kreis und passt Overlay-Center & Scale an.
@@ -434,6 +454,7 @@ class DartVisionApp:
         """
         Findet konzentrische Ringe via HoughCircles (im ROI-Panel).
         Liefert (cx, cy, r_double_outer_px) oder None.
+        Mit Jitter-Guard & EMA-Stabilisierung.
         """
         if roi_bgr is None or roi_bgr.size == 0:
             return None
@@ -441,7 +462,7 @@ class DartVisionApp:
         gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (5, 5), 1.2)
 
-        # Erwartungsbereich um aktuellen Wert (±15%)
+        # Erwartungsbereich um aktuellen Wert (±15 %)
         if self.board_mapper is not None:
             r0 = float(self.board_mapper.calib.r_outer_double_px)
         elif self.uc is not None:
@@ -452,34 +473,46 @@ class DartVisionApp:
         rmin = max(10, int(r0 * 0.85))
         rmax = int(r0 * 1.15)
 
-        # Hough-Parameter: ggf. bei kontrastarmen Bildern param2 kleiner (30–34) wählen
         circles = cv2.HoughCircles(
             gray, cv2.HOUGH_GRADIENT, dp=1.15, minDist=18,
-            param1=110, param2=32, minRadius=int(rmin), maxRadius=int(rmax)
+            param1=170, param2=32, minRadius=int(rmin), maxRadius=int(rmax)
         )
 
         if circles is None:
             return None
 
         c = np.uint16(np.around(circles[0]))  # (N,3): x,y,r
-        # --- Ratio-Check: wenn inkonsistent, abbrechen ---
         r_out_guess = float(max(c, key=lambda k: k[2])[2])
+
+        # Ratio-Check (stellt sicher, dass Triple/Double-Verhältnis passt)
         if not self._ratio_consistent(c, r_out_guess):
             return None
 
-        # jetzt den größten Kreis nehmen (ggf. danach noch mitteln)
-        xyr = max(c, key=lambda k: k[2])
-        cx, cy, r_out = float(xyr[0]), float(xyr[1]), float(xyr[2])
-        # (optional: close-Mittelung wie zuvor)
+        # Größten Kreis nehmen und ggf. mitteln
+        close = [k for k in c if abs(float(k[2]) - r_out_guess) < r0 * 0.03]
+        cx = float(np.mean([k[0] for k in close]))
+        cy = float(np.mean([k[1] for k in close]))
+        r_out = float(np.mean([k[2] for k in close]))
 
-        # Optionales Mitteln über nahe Kreise (stabilisiert)
-        close = [k for k in c if abs(float(k[2]) - r_out) < r0 * 0.03]
-        if len(close) >= 2:
-            cx = float(np.mean([k[0] for k in close]))
-            cy = float(np.mean([k[1] for k in close]))
-            r_out = float(np.mean([k[2] for k in close]))
+        # --- EMA smoothing (sanfte Stabilisierung) ---
+        alpha = 0.25
+        if hasattr(self, "_last_hough"):
+            last_cx, last_cy, last_r = self._last_hough
+            cx = alpha * cx + (1 - alpha) * last_cx
+            cy = alpha * cy + (1 - alpha) * last_cy
+            r_out = alpha * r_out + (1 - alpha) * last_r
+        self._last_hough = (cx, cy, r_out)
 
-        # (Optional) Debug-Overlay
+        # --- Jitter-Guard (Sprünge abfangen) ---
+        if self.board_mapper is not None:
+            cal = self.board_mapper.calib
+            dc = float(np.hypot(cx - cal.cx, cy - cal.cy))
+            dr = abs(r_out - cal.r_outer_double_px)
+            if dc > 8.0 or dr > 4.0:
+                logger.debug(f"[HoughRings] jitter guard: skip (Δc={dc:.1f}px, Δr={dr:.1f}px)")
+                return None
+
+        # Debug: Anzeige der gefundenen Kreise
         if getattr(self, "show_debug", False):
             dbg = roi_bgr.copy()
             cv2.circle(dbg, (int(round(cx)), int(round(cy))), int(round(r_out)), (0, 255, 0), 2, cv2.LINE_AA)
@@ -562,6 +595,8 @@ class DartVisionApp:
             self.homography_eff = compute_effective_H(self.uc)
             if hasattr(self, "_sync_mapper_from_unified"):
                 self._sync_mapper_from_unified()
+                self._roi_annulus_mask = None
+                self._ensure_roi_annulus_mask()
             save_unified_calibration(self.calib_path, self.uc)
 
         # Debug-Plot (optional)
@@ -868,6 +903,8 @@ class DartVisionApp:
             if getattr(self, "uc", None) is not None:
                 # Single Source of Truth
                 self._sync_mapper_from_unified()
+                self._ensure_roi_annulus_mask()
+
                 logger.info("[BOARD] Mapper init (unified) | rOD=%.1f px, rot=%.2f°",
                             self.board_mapper.calib.r_outer_double_px, self.board_mapper.calib.rotation_deg)
             else:
@@ -1302,6 +1339,8 @@ class DartVisionApp:
 
                 # Mapper sofort synchronisieren (Unified Pfad)
                 self._sync_mapper_from_unified()
+                self._roi_annulus_mask = None
+                self._ensure_roi_annulus_mask()
                 return
             except Exception as e:
                 # Falls Unified vorhanden aber invalide -> sauber auf Legacy/New typed zurückfallen
@@ -1372,6 +1411,9 @@ class DartVisionApp:
             )
             self.homography_eff = compute_effective_H(self.uc)
             self._sync_mapper_from_unified()
+            self._roi_annulus_mask = None
+            self._ensure_roi_annulus_mask()
+
         except Exception:
             # Wenn das fehlschlägt, läuft Legacy ohne Unified weiter.
             pass
@@ -1387,6 +1429,9 @@ class DartVisionApp:
         roi_frame = self.roi.warp_roi(frame)
         # Motion
         motion_detected, motion_event, fg_mask = self.motion.detect_motion(roi_frame, self.frame_count, timestamp)
+        # ... du hast hier bereits 'fg_mask' im ROI ...
+        if self._roi_annulus_mask is not None and fg_mask is not None:
+            fg_mask = cv2.bitwise_and(fg_mask, self._roi_annulus_mask)
 
         # Dart detection
         impact = None
@@ -1437,6 +1482,10 @@ class DartVisionApp:
                     self.uc.overlay_adjust.r_outer_double_px = float(r_out)
                     self.homography_eff = compute_effective_H(self.uc)
                     self._sync_mapper_from_unified()
+                    # nach jeder erfolgreichen Geometrie-Aktualisierung:
+                    self._roi_annulus_mask = None
+                    self._ensure_roi_annulus_mask()
+
                     # optional: nicht jedes Mal speichern – hier ok, damit’s persistent ist
                     save_unified_calibration(self.calib_path, self.uc)
 
@@ -1485,6 +1534,13 @@ class DartVisionApp:
             fg_color = cv2.resize(fg_color, ROI_SIZE)
             disp_roi = cv2.addWeighted(disp_roi, 0.9, fg_color, 0.6, 0.3)
 
+        if self.show_mask and self._roi_annulus_mask is not None:
+            disp_roi = cv2.addWeighted(
+                disp_roi, 1.0,
+                cv2.cvtColor(self._roi_annulus_mask, cv2.COLOR_GRAY2BGR),
+                0.25, 0.0
+            )
+
         # Board rings (ROI)
         # ROI-Overlays nach Modus
         if self.homography is not None or self.homography_eff is not None:
@@ -1497,15 +1553,9 @@ class DartVisionApp:
                 cx = int(round(cal.cx))
                 cy = int(round(cal.cy))
                 r_base = int(round(cal.r_outer_double_px))  # absoluter Doppelaußenradius
-
                 # äußerer Doppelring (grün)
                 cv2.circle(disp_roi, (cx, cy), max(1, r_base), (0, 255, 0), 2, cv2.LINE_AA)
-                # weitere Referenzringe (gelb) relativ zu r_base (Board-Config)
-                for f in (self.board_cfg.radii.r_triple_outer,
-                          self.board_cfg.radii.r_double_inner,
-                          self.board_cfg.radii.r_bull_outer,
-                          self.board_cfg.radii.r_bull_inner):
-                    cv2.circle(disp_roi, (cx, cy), max(1, int(round(r_base * float(f)))), (255, 255, 0), 1, cv2.LINE_AA)
+
 
             # 3) Präzises Mapping nur im FULL-Modus
             if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
@@ -1598,11 +1648,21 @@ class DartVisionApp:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
 
         # Impact markers
+        # Impact markers (ROI-Panel)
         for imp in self.dart.get_confirmed_impacts():
-            cv2.circle(disp_roi, imp.position, 5, (0, 255, 255), 2)
-            cv2.circle(disp_roi, imp.position, 2, (0, 255, 255), -1)
-            if hasattr(imp, "score_label") and imp.score_label:
-                cv2.putText(disp_roi, imp.score_label, (imp.position[0] + 10, imp.position[1] - 10),
+            # refined (gelb):
+            px, py = int(imp.position[0]), int(imp.position[1])
+            cv2.circle(disp_roi, (px, py), 2, (0, 255, 255), 2, cv2.LINE_AA)
+            cv2.circle(disp_roi, (px, py), 1, (0, 255, 255), -1, cv2.LINE_AA)
+
+            # optional: raw als kleine weiße Markierung – hilft beim Debuggen der Verschiebung
+            if getattr(imp, "raw_position", None):
+                rx, ry = int(imp.raw_position[0]), int(imp.raw_position[1])
+                cv2.circle(disp_roi, (rx, ry), 2, (255, 255, 255), -1, cv2.LINE_AA)
+
+            # Label
+            if getattr(imp, "score_label", None):
+                cv2.putText(disp_roi, imp.score_label, (px + 10, py - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
 
         # Game-HUD unten links im ROI
@@ -1740,6 +1800,10 @@ class DartVisionApp:
                     self.show_debug = not self.show_debug
                 elif key == ord('m'):
                     self.show_motion = not self.show_motion
+                    logger.info("Motion overlay: %s", "ON" if self.show_motion else "OFF")
+                elif key == ord('M'):  # Shift-M
+                    self.show_mask = not getattr(self, "show_mask", False)
+                    logger.info("Mask overlay: %s", "ON" if self.show_mask else "OFF")
                 elif key == ord('r'):
                     self.dart.clear_impacts();
                     self.total_darts = 0
@@ -1789,17 +1853,30 @@ class DartVisionApp:
                         else:
                             # center_dx/dy sind Offsets zur Basismitte (metrics.center_px)
                             base_cx, base_cy = self.uc.metrics.center_px
-                            self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
-                            self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
-                            self.uc.overlay_adjust.r_outer_double_px = float(r_out)
-
-                            # Eff. H aktualisieren + Mapper syncen + speichern
-                            self.homography_eff = compute_effective_H(self.uc)
-                            if hasattr(self, "_sync_mapper_from_unified"):
-                                self._sync_mapper_from_unified()
-                        save_unified_calibration(self.calib_path, self.uc)
-
-                        logger.info("[HoughRings] cx=%.1f cy=%.1f rOD=%.1f", cx, cy, r_out)
+                            # --- Jitter-Guard: nur kleine Sprünge akzeptieren ---
+                            if self.board_mapper is not None:
+                                cal = self.board_mapper.calib
+                                dc = float(((cx - cal.cx) ** 2 + (cy - cal.cy) ** 2) ** 0.5)
+                                dr = abs(float(r_out) - float(cal.r_outer_double_px))
+                                if dc > 8.0 or dr > 4.0:
+                                    logger.debug(f"[HoughRings] jitter guard: skip (Δc={dc:.1f}px, Δr={dr:.1f}px)")
+                                    # kein Update – einfach zum nächsten Frame
+                                    # (nicht 'return', sonst verlässt du die run()-Schleife!)
+                                    continue
+                                else:
+                                    # --- Update anwenden ---
+                                    self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
+                                    self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
+                                    self.uc.overlay_adjust.r_outer_double_px = float(r_out)
+                                    # Eff. H aktualisieren + Mapper syncen + Maske erneuern
+                                    self.homography_eff = compute_effective_H(self.uc)
+                                    if hasattr(self, "_sync_mapper_from_unified"):
+                                        self._sync_mapper_from_unified()
+                                        self._roi_annulus_mask = None
+                                        self._ensure_roi_annulus_mask()
+                                    # Persistenz
+                                    save_unified_calibration(self.calib_path, self.uc)
+                                    logger.info(f"[HoughRings] cx={cx:.1f} cy={cy:.1f} rOD={r_out:.1f}")
                 elif key == ord('z'):
                     self.align_auto = not self.align_auto
                     logger.info(f"[ALIGN] auto={'ON' if self.align_auto else 'OFF'} (mode must be ALIGN to run)")
