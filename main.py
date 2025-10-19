@@ -13,7 +13,6 @@ import argparse
 import logging
 import sys
 import time
-import json
 import yaml
 import os
 import numpy as np
@@ -22,7 +21,6 @@ from typing import Optional, Tuple, List
 from collections import deque
 from src.game.game import DemoGame, GameMode
 from src.vision.dart_impact_detector import apply_detector_preset
-from src.pipeline.frame_result import FrameResult
 
 
 # Board mapping/overlays/config
@@ -45,6 +43,18 @@ from src.utils.performance_profiler import PerformanceProfiler
 from src.calibration.aruco_quad_calibrator import ArucoQuadCalibrator
 from src.calibration.calib_io import save_calibration_yaml
 from src.calibration.calib_io import load_calibration_yaml
+# Unified calibration I/O
+from src.calibration.calib_io import (
+    load_yaml,
+    load_unified_calibration,
+    save_unified_calibration,
+    compute_effective_H,
+    mapper_calibration_from_unified,
+)
+
+# Pydantic models for unified calibration
+from src.board.config_models import UnifiedCalibration, Homography, Metrics, OverlayAdjust, ROIAdjust
+
 
 
 # ---------- Logging ----------
@@ -115,7 +125,7 @@ ARUCO_DICT_MAP = {
     "5X5_50":  cv2.aruco.DICT_5X5_50,
     "6X6_250": cv2.aruco.DICT_6X6_250,
 }
-CALIB_YAML = Path("config/calibration_unified.yaml")
+CALIB_YAML = Path("calibration_unified.yaml")
 
 
 # ---------- Main App ----------
@@ -136,9 +146,17 @@ class DartVisionApp:
         # Calibration state
         self.cal = UnifiedCalibrator(squares_x=5, squares_y=7, square_length_m=0.04, marker_length_m=0.03)
         self.homography: Optional[np.ndarray] = None
+        self.homography_eff: Optional[np.ndarray] = None  # Heff = ROI_adjust * H
+        self.uc: Optional[UnifiedCalibration] = None
+        self.calib_path: Path = CALIB_YAML  # ← konsistent zur Modulkonstante
+
+        # ROI/Board Baselines
         self.mm_per_px: float = 1.0
         self.roi_board_radius: float = 160.0
-        self.center_px: Tuple[int, int] = (0, 0)
+
+        # ROI center als Instanz-Attribut (Float!)
+        self.ROI_CENTER = (float(ROI_SIZE[0]) * 0.5, float(ROI_SIZE[1]) * 0.5)
+        self.center_px: Tuple[float, float] = (self.ROI_CENTER[0], self.ROI_CENTER[1])
 
         # UI state
         self.running = False
@@ -147,7 +165,6 @@ class DartVisionApp:
         self.show_motion = False
         self.frame_count = 0
         self.session_start = time.time()
-        self.total_darts = 0
 
         # HUD buffers (Glättung)
         self._hud_b = deque(maxlen=15)  # Brightness
@@ -187,7 +204,6 @@ class DartVisionApp:
         self.ph = None  # PolarHeatmap
         self.heatmap_enabled = False
         self.polar_enabled = False
-        self.session_start = time.time()
         self.session_id = str(int(self.session_start))
         self.total_darts = 0
         self.stats = StatsAccumulator()
@@ -196,6 +212,125 @@ class DartVisionApp:
         self.src_fps = 0.0
         self._next_vsync = None
         self._last_pos_msec = None
+
+    def _update_uc_from_calibrator(self, H_base: np.ndarray,
+                                   center_px: tuple[float, float],
+                                   r_outer_double_px: float,
+                                   roi_adjust: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 0.0),
+                                   rotation_deg: float = 0.0):
+        """
+        Push calibration result from calibrator into UnifiedCalibration:
+          - H_base: 3x3 homography (base, not effective)
+          - center_px: (cx, cy) in ROI/canvas pixels (baseline center)
+          - r_outer_double_px: absolute outer-double radius (px)
+          - roi_adjust: (tx_px, ty_px, scale, rot_deg) – optional
+          - rotation_deg: fine sector rotation (overlay)
+        """
+        tx, ty, scale, rot = roi_adjust
+        Hb = np.asarray(H_base, dtype=np.float64)
+        cx0, cy0 = float(center_px[0]), float(center_px[1])
+
+        if getattr(self, "uc", None) is None:
+            self.uc = UnifiedCalibration(
+                homography=Homography(H=Hb.tolist()),
+                metrics=Metrics(center_px=(cx0, cy0), roi_board_radius=float(r_outer_double_px)),
+                overlay_adjust=OverlayAdjust(
+                    rotation_deg=float(rotation_deg),
+                    r_outer_double_px=float(r_outer_double_px),
+                    center_dx_px=0.0,
+                    center_dy_px=0.0,
+                ),
+                roi_adjust=ROIAdjust(
+                    tx_px=float(tx), ty_px=float(ty), scale=float(scale), rot_deg=float(rot)
+                ),
+            )
+        else:
+            self.uc.homography.H = Hb.tolist()
+            self.uc.metrics.center_px = (cx0, cy0)
+            self.uc.metrics.roi_board_radius = float(r_outer_double_px)
+            self.uc.overlay_adjust.rotation_deg = float(rotation_deg)
+            self.uc.overlay_adjust.r_outer_double_px = float(r_outer_double_px)
+            # center_dx/dy bleiben 0.0 direkt nach der Kalibrierung (Feinjustage kommt später)
+            self.uc.overlay_adjust.center_dx_px = 0.0
+            self.uc.overlay_adjust.center_dy_px = 0.0
+            self.uc.roi_adjust.tx_px = float(tx)
+            self.uc.roi_adjust.ty_px = float(ty)
+            self.uc.roi_adjust.scale = float(scale)
+            self.uc.roi_adjust.rot_deg = float(rot)
+
+        # Heff neu & Mapper syncen
+        self.homography = Hb
+        self.homography_eff = compute_effective_H(self.uc)
+        if hasattr(self, "_sync_mapper_from_unified"):
+            self._sync_mapper_from_unified()
+
+    def _save_calibration_unified(self, calib_path: Path | None = None):
+        """
+        Persist calibration in unified format:
+          - homography.H (base, not effective)
+          - metrics.center_px / metrics.roi_board_radius
+          - overlay_adjust.{rotation_deg, r_outer_double_px, center_dx_px, center_dy_px}
+          - roi_adjust.{tx_px, ty_px, scale, rot_deg}
+        """
+        path = Path(calib_path) if calib_path is not None else getattr(self, "calib_path",
+                                                                       Path("calibration_unified.yaml"))
+
+        # Baselines aus aktuellem State
+        cx0, cy0 = getattr(self, "ROI_CENTER", (0.0, 0.0))
+        r_od = float(getattr(self, "roi_board_radius", 400.0))
+        rot = float(getattr(self, "overlay_rot_deg", 0.0))
+        dx = float(getattr(self, "overlay_center_dx", 0.0))
+        dy = float(getattr(self, "overlay_center_dy", 0.0))
+        scale = float(getattr(self, "overlay_scale", 1.0))
+        Hb = np.asarray(self.homography if self.homography is not None else np.eye(3), dtype=np.float64)
+
+        # ROI-Adjust (falls vorhanden; sonst neutral)
+        roi_tx = float(getattr(self, "roi_tx", 0.0))
+        roi_ty = float(getattr(self, "roi_ty", 0.0))
+        roi_scale = float(getattr(self, "roi_scale", 1.0))
+        roi_rot = float(getattr(self, "roi_rot_deg", 0.0))
+
+        # Unified-Objekt aktualisieren/aufbauen
+        if getattr(self, "uc", None) is None:
+            self.uc = UnifiedCalibration(
+                homography=Homography(H=Hb.tolist()),
+                metrics=Metrics(center_px=(float(cx0), float(cy0)), roi_board_radius=float(r_od)),
+                overlay_adjust=OverlayAdjust(
+                    rotation_deg=float(rot),
+                    r_outer_double_px=float(r_od * scale),
+                    center_dx_px=float(dx),
+                    center_dy_px=float(dy),
+                ),
+                roi_adjust=ROIAdjust(
+                    tx_px=roi_tx, ty_px=roi_ty, scale=roi_scale, rot_deg=roi_rot
+                ),
+            )
+        else:
+            self.uc.homography.H = Hb.tolist()
+            self.uc.metrics.center_px = (float(cx0), float(cy0))
+            self.uc.metrics.roi_board_radius = float(r_od)
+            self.uc.overlay_adjust.rotation_deg = float(rot)
+            self.uc.overlay_adjust.center_dx_px = float(dx)
+            self.uc.overlay_adjust.center_dy_px = float(dy)
+            self.uc.overlay_adjust.r_outer_double_px = float(r_od * scale)
+            self.uc.roi_adjust.tx_px = roi_tx
+            self.uc.roi_adjust.ty_px = roi_ty
+            self.uc.roi_adjust.scale = roi_scale
+            self.uc.roi_adjust.rot_deg = roi_rot
+
+        # Heff aktualisieren + Mapper syncen (sofort konsistent)
+        self.homography_eff = compute_effective_H(self.uc)
+        if hasattr(self, "_sync_mapper_from_unified"):
+            self._sync_mapper_from_unified()
+
+        # Schreiben
+        save_unified_calibration(path, self.uc)
+
+        # Feedback
+        try:
+            self.toast(f"Calibration saved → {path}")
+        except Exception:
+            print(f"[INFO] Calibration saved → {path}")
 
     def _hough_refine_center(self, roi_bgr) -> bool:
         """
@@ -362,6 +497,15 @@ class DartVisionApp:
             self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(self.overlay_scale)
             self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
 
+    def _sync_mapper_from_unified(self):
+        """Single source of truth → mapper Calibration and internal H_eff."""
+        if self.board_cfg is None or self.uc is None:
+            return
+        calib = mapper_calibration_from_unified(self.uc)
+        self.board_mapper = BoardMapper(self.board_cfg, calib)
+        if self.homography is None or self.homography_eff is None:
+            self.homography_eff = compute_effective_H(self.uc)
+
     def build_roi_adjust_matrix(
             self,
             center_xy: Tuple[float, float],
@@ -477,13 +621,18 @@ class DartVisionApp:
         logger.info("DART VISION MVP — init (UnifiedCalibrator only)")
         logger.info("=" * 60)
         logger.info(
-            "Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode, H=Heatmap, P=Polar")
+            "Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode, X=Save (unified), H=Heatmap, P=Polar")
 
         # 1) Explizit per CLI geladen?
         if self.args.load_yaml:
             try:
                 data = load_calibration_yaml(self.args.load_yaml)
                 self._apply_loaded_yaml(data)  # neuer Loader (typed)
+                # ⬇️ Zusatz-Log: welches Schema ist aktiv?
+                if getattr(self, "uc", None) is not None:
+                    logger.info("[CALIB] Unified calibration aktiv (homography+metrics+overlay_adjust+roi_adjust).")
+                else:
+                    logger.info("[CALIB] Typed/Legacy calibration aktiv.")
             except Exception as e:
                 logger.error(f"[LOAD] Failed to load YAML from {self.args.load_yaml}: {e}")
 
@@ -494,6 +643,11 @@ class DartVisionApp:
                 if cfg:
                     self._apply_loaded_calibration(cfg)  # verträgt beide Schemata
                     logger.info(f"[CALIB] Loaded {CALIB_YAML}")
+                    # ⬇️ Zusatz-Log: welches Schema ist aktiv?
+                    if getattr(self, "uc", None) is not None:
+                        logger.info("[CALIB] Unified calibration aktiv (homography+metrics+overlay_adjust+roi_adjust).")
+                    else:
+                        logger.info("[CALIB] Typed/Legacy calibration aktiv.")
             except Exception as e:
                 logger.warning(f"[CALIB] Could not load {CALIB_YAML}: {e}")
         else:
@@ -506,8 +660,10 @@ class DartVisionApp:
 
         # ROI
         self.roi = ROIProcessor(ROIConfig(roi_size=ROI_SIZE, polar_enabled=False))
-        if self.homography is not None:
-            self.roi.set_homography_from_matrix(self.homography)
+        if self.homography is not None or getattr(self, "homography_eff", None) is not None:
+            H_eff = self.homography_eff if getattr(self, "homography_eff", None) is not None else self.homography
+            self.roi.set_homography_from_matrix(H_eff)
+
             # Falls noch keine Basis gesetzt ist und wir bereits einen ROI-Radius kennen:
             if (self.roi_base_radius is None) and (self.roi_board_radius and self.roi_board_radius > 0):
                 self.roi_base_radius = float(self.roi_board_radius)
@@ -529,22 +685,36 @@ class DartVisionApp:
                 self.board_cfg = BoardConfig()
 
         # Mapper instanziieren (nur wenn Homography/ROI-Radius vorhanden)
-        if self.homography is not None and self.board_cfg is not None and self.roi_board_radius > 0:
-            self.board_mapper = BoardMapper(
-                self.board_cfg,
-                Calibration(
-                    cx=float(ROI_CENTER[0] + self.overlay_center_dx),
-                    cy = float(ROI_CENTER[1] + self.overlay_center_dy),
-                    r_outer_double_px = float(self.roi_board_radius) * float(self.overlay_scale),
-                    rotation_deg=float(self.overlay_rot_deg),
-                ),
-            )
-
-            logger.info(f"[BOARD] Mapper init | rot={getattr(self, 'overlay_rot_deg', 0.0):.2f}°, "
-                        f"scale={getattr(self, 'overlay_scale', 1.0):.4f}, roiR={self.roi_board_radius:.1f}px")
+        # Mapper instanziieren (Unified bevorzugt)
+        if self.board_cfg is not None and (
+                self.homography is not None or getattr(self, "homography_eff", None) is not None):
+            if getattr(self, "uc", None) is not None:
+                # Single Source of Truth
+                self._sync_mapper_from_unified()
+                logger.info("[BOARD] Mapper init (unified) | rOD=%.1f px, rot=%.2f°",
+                            self.board_mapper.calib.r_outer_double_px, self.board_mapper.calib.rotation_deg)
+            else:
+                # Legacy-Fallback (nur wenn wirklich keine UC vorhanden ist)
+                if self.roi_board_radius and self.roi_board_radius > 0:
+                    self.board_mapper = BoardMapper(
+                        self.board_cfg,
+                        Calibration(
+                            cx=float(ROI_CENTER[0] + self.overlay_center_dx),
+                            cy=float(ROI_CENTER[1] + self.overlay_center_dy),
+                            r_outer_double_px=float(self.roi_board_radius) * float(getattr(self, "overlay_scale", 1.0)),
+                            rotation_deg=float(getattr(self, "overlay_rot_deg", 0.0)),
+                        ),
+                    )
+                    logger.info("[BOARD] Mapper init (legacy) | rot=%.2f°, scale=%.4f, roiR=%.1f px",
+                                float(getattr(self, "overlay_rot_deg", 0.0)),
+                                float(getattr(self, "overlay_scale", 1.0)),
+                                float(self.roi_board_radius))
+                else:
+                    self.board_mapper = None
+                    logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Radius).")
         else:
             self.board_mapper = None
-            logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Radius).")
+            logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Config).")
 
         # Vision modules
         self.motion = MotionDetector(MotionConfig(
@@ -719,7 +889,7 @@ class DartVisionApp:
             y = 30
             for line in [
                 f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–12%)",
-                "Keys: [m] manual-4  [a] aruco-quad  [s] save  [q] quit",
+                "Keys: [m] manual-4  [a] aruco-quad  [s] save (unified)  [q] quit",
             ]:
                 cv2.putText(display, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, hud_color, 2, cv2.LINE_AA);
                 y += 22
@@ -753,6 +923,30 @@ class DartVisionApp:
                 self.cal.H = H  # store in UnifiedCalibrator for consistency
                 self.cal.last_image_size = frame.shape[1], frame.shape[0]
 
+                # --- Unified: sofort in UC übernehmen ---
+                # center_px: zentrale ROI/Canvas-Referenz; hier ok: Bildmitte der Preview
+                h_now, w_now = frame.shape[:2]
+                center_px = (w_now * 0.5, h_now * 0.5)
+
+                # r_outer_double_px aus mm/px + bekannter Board-Geometrie ableiten, falls möglich
+                r_od_px = None
+                try:
+                    if mmpp and getattr(self.cal, "board_diameter_mm", None):
+                        r_od_px = float(self.cal.board_diameter_mm) * 0.5 / float(mmpp)
+                except Exception:
+                    pass
+                if r_od_px is None:
+                    # Fallback: falls du bereits einen ROI-Radius im State führst
+                    r_od_px = float(getattr(self, "roi_board_radius", 420.0))
+
+                self._update_uc_from_calibrator(
+                    H_base=H,
+                    center_px=center_px,
+                    r_outer_double_px=float(r_od_px),
+                    roi_adjust=(0.0, 0.0, 1.0, 0.0),  # keine ROI-Adjusts gesetzt
+                    rotation_deg=0.0,  # Feine Sektorausrichtung später im Align
+                )
+
                 # Visual feedback: draw edges of ROI projection
                 disp = self.aruco_quad.draw_debug(frame, [], None, None, H)
                 cv2.imshow("ArucoQuad preview", disp)
@@ -772,8 +966,9 @@ class DartVisionApp:
                 logger.info("[Manual] frame captured; click 4 corners (TL,TR,BR,BL).")
 
 
+
             elif key == ord('s'):
-                # 1) Falls manuell 4 Punkte geklickt wurden und noch keine H vorhanden ist: berechnen
+                # 1) Falls manuelle 4 Punkte geklickt wurden und noch keine H vorhanden ist: berechnen
                 if self.homography is None and captured_for_manual is not None and len(clicked_pts) == 4:
                     H, center, roi_r, mmpp = UnifiedCalibrator._homography_and_metrics(
                         np.float32(clicked_pts),
@@ -784,102 +979,25 @@ class DartVisionApp:
                     self.center_px = center
                     self.roi_board_radius = roi_r
                     self.mm_per_px = mmpp
+                    # Unified-Struktur aktualisieren (center/roi_r kommen hier direkt aus der Berechnung)
+                    self._update_uc_from_calibrator(
+                        H_base=H,
+                        center_px=center,
+                        r_outer_double_px=float(roi_r),
+                        roi_adjust=(0.0, 0.0, 1.0, 0.0),
+                        rotation_deg=0.0,
+                    )
 
                 # 2) Ohne Homography können wir nichts speichern
                 if self.homography is None:
                     logger.warning("No homography yet. Use manual (m) or ArUco-Quad (a) first.")
                     continue
 
-                # 3) Aktuelle Bildgröße für Metadaten (falls möglich)
-                img_w = img_h = None
-                ok_frame, frame_now = temp.read()  # temp ist deine Preview-Kamera in der UI
-                if ok_frame and frame_now is not None:
-                    img_h, img_w = frame_now.shape[:2]
+                # 3) Unified speichern (Einzeiler)
+                self._save_calibration_unified()
 
-                # 4) Fall A: ChArUco-Kalibrierung vorhanden → charuco YAML
-                if getattr(self.cal, "K", None) is not None:
-                    data = {
-                        "type": "charuco",
-                        "board": {
-                            "squares_x": self.cal.squares_x,
-                            "squares_y": self.cal.squares_y,
-                            "square_length_m": float(self.cal.square_length_m),
-                            "marker_length_m": float(self.cal.marker_length_m),
-                            "dictionary": int(self.cal.dict_type),
-                        },
-                        "camera": {
-                            "matrix": self.cal.K.tolist(),
-                            "dist_coeffs": None if getattr(self.cal, "D", None) is None else self.cal.D.tolist(),
-                            "rms_px": float(getattr(self.cal, "_rms", 0.0)),
-                            "image_size": [int(img_w or 0), int(img_h or 0)],
-
-                        },
-
-                        # optional: falls du parallel eine Homography (manuell oder ArUco) gesetzt hast
-                        "homography": {"H": self.homography.tolist()},
-                        "metrics": {
-                            "mm_per_px": float(self.mm_per_px) if self.mm_per_px is not None else None,
-                            "center_px": [int(self.center_px[0]), int(self.center_px[1])] if getattr(self, "center_px",
-                                                                                                     None) is not None else None,
-                            "roi_board_radius": float(self.roi_board_radius) if getattr(self, "roi_board_radius",
-                                                                                        None) is not None else None,
-                        },
-
-                    }
-                    save_calibration_yaml(CALIB_YAML, data)
-                    logger.info(f"[SAVE] ChArUco YAML → {CALIB_YAML}")
-                    temp.stop();
-                    cv2.destroyWindow("Calibration")
-                    return True
-
-                # 5) Fall B: ArUco-Quad verwendet → aruco_quad YAML
-                #    Hinweis: Lege im 'a'-Hotkey (Aruco-Quad) idealerweise self.aruco_last_info = info an.
-                if hasattr(self, "aruco_quad") and self.aruco_quad is not None:
-                    # Versuche Zusatzinfos zu ziehen (IDs, Rechteckgröße in mm)
-                    used_ids = None
-                    rect_mm = None
-                    mmpp = float(self.mm_per_px) if self.mm_per_px is not None else None
-                    if hasattr(self, "aruco_last_info") and isinstance(self.aruco_last_info, dict):
-                        used_ids = self.aruco_last_info.get("ids")
-                    if hasattr(self, "_aruco_rect_mm") and self._aruco_rect_mm:
-                        rect_mm = [float(self._aruco_rect_mm[0]), float(self._aruco_rect_mm[1])]
-                    data = {
-                        "type": "aruco_quad",
-                        "aruco": {
-                            "dictionary": int(self.aruco_quad.aruco_dict.bytesList.shape[0]),  # informativ
-                            "expected_ids": used_ids,
-                        },
-                        "roi": {"size_px": int(self.aruco_quad.roi_size)},
-                        "homography": {"H": self.homography.tolist()},
-                        "scale": {
-                            "mm_per_px": mmpp,
-                            "rect_width_mm": rect_mm[0] if rect_mm else None,
-                            "rect_height_mm": rect_mm[1] if rect_mm else None,
-                        },
-                        "image_size": [int(img_w or 0), int(img_h or 0)],
-                    }
-                    save_calibration_yaml(CALIB_YAML, data)
-                    logger.info(f"[SAVE] ArUco-Quad YAML → {CALIB_YAML}")
-                    temp.stop();
-                    cv2.destroyWindow("Calibration")
-                    return True
-
-                # 6) Fall C: Nur manuelle 4-Punkt-Homographie → homography_only YAML
-                data = {
-                    "type": "homography_only",
-                    "homography": {"H": self.homography.tolist()},
-                    "metrics": {
-                        "mm_per_px": float(self.mm_per_px) if self.mm_per_px is not None else None,
-                        "center_px": [int(self.center_px[0]), int(self.center_px[1])] if getattr(self, "center_px",
-                                                                                                    None) is not None else None,
-                        "roi_board_radius": float(self.roi_board_radius) if getattr(self, "roi_board_radius",
-                                                                                    None) is not None else None,
-                    },
-                    "image_size": [int(img_w or 0), int(img_h or 0)],
-                }
-                save_calibration_yaml(CALIB_YAML, data)
-                logger.info(f"[SAVE] Homography YAML → {CALIB_YAML}")
-                temp.stop();
+                # 4) UI schließen
+                temp.stop()
                 cv2.destroyWindow("Calibration")
                 return True
 
@@ -981,18 +1099,46 @@ class DartVisionApp:
     def _apply_loaded_calibration(self, cfg: dict):
         """
         Backward/forward compatible loader:
-          - New typed schema: type: charuco | aruco_quad | homography_only
-          - Legacy flat schema: method, homography (list), mm_per_px, camera_matrix, dist_coeffs, ...
+          - Unified schema (preferred): calibration.{homography, metrics, overlay_adjust, roi_adjust}
+          - New typed schema (your existing): type: charuco | aruco_quad | homography_only  -> _apply_loaded_yaml()
+          - Legacy flat schema: method, homography (list|{H:list}), mm_per_px, camera_matrix, dist_coeffs, ...
         """
         if not cfg:
             return
 
-        # --- New typed schema? delegate to _apply_loaded_yaml ---
+        # --- 0) Unified schema? (Single Source of Truth) --------------------------
+        # Accept both nested ("calibration": {...}) and flat root.
+        root = cfg.get("calibration", cfg)
+        unified_keys = ("homography", "metrics", "overlay_adjust", "roi_adjust")
+        if all(k in root for k in unified_keys):
+            try:
+                # Build UC model
+                self.uc = UnifiedCalibration(
+                    homography=Homography(**root["homography"]),
+                    metrics=Metrics(**root["metrics"]),
+                    overlay_adjust=OverlayAdjust(**root["overlay_adjust"]),
+                    roi_adjust=ROIAdjust(**root["roi_adjust"]),
+                )
+                # Base & effective homography
+                self.homography = np.asarray(self.uc.homography.H, dtype=np.float64)
+                self.homography_eff = compute_effective_H(self.uc)
+
+                # Mapper sofort synchronisieren (Unified Pfad)
+                self._sync_mapper_from_unified()
+                return
+            except Exception as e:
+                # Falls Unified vorhanden aber invalide -> sauber auf Legacy/New typed zurückfallen
+                try:
+                    self.logger.warning(f"Unified calibration present but failed to parse/apply: {e}")
+                except Exception:
+                    pass  # logger evtl. nicht initialisiert
+
+        # --- 1) New typed schema? delegate to your existing path -------------------
         if "type" in cfg:
             self._apply_loaded_yaml(cfg)
             return
 
-        # --- Legacy schema handling ---
+        # --- 2) Legacy schema handling (dein bestehender Code + minimal ergänzt) ---
         # homography can be a list or {"H": list}
         H_node = cfg.get("homography")
         if isinstance(H_node, dict):
@@ -1010,6 +1156,8 @@ class DartVisionApp:
             self.cal.K = np.array(cfg["camera_matrix"], dtype=np.float64)
         if cfg.get("dist_coeffs") is not None:
             self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
+
+        # Overlay-Adjust (legacy-style); bei Unified NICHT hier setzen
         ov = (cfg or {}).get("overlay_adjust") or {}
         if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
         if "scale" in ov:        self.overlay_scale = float(ov["scale"])
@@ -1019,6 +1167,37 @@ class DartVisionApp:
         if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
             self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
 
+        # OPTIONAL: Aus Legacy Feldern eine flüchtige Unified-Struktur bauen,
+        # damit restliche Pipeline einheitlich auf self.uc/self.homography_eff arbeitet.
+        try:
+            if self.homography is not None:
+                H = self.homography
+            else:
+                H = np.eye(3, dtype=np.float64)
+            # ROI center baseline, falls bei dir als Konstante hinterlegt:
+            cx0 = float(getattr(self, "ROI_CENTER", (0.0, 0.0))[0])
+            cy0 = float(getattr(self, "ROI_CENTER", (0.0, 0.0))[1])
+            r_od = float(self.roi_board_radius) if hasattr(self, "roi_board_radius") else 160.0
+            rot = float(getattr(self, "overlay_rot_deg", 0.0))
+            dx = float(getattr(self, "overlay_center_dx", 0.0))
+            dy = float(getattr(self, "overlay_center_dy", 0.0))
+
+            self.uc = UnifiedCalibration(
+                homography=Homography(H=H.tolist()),
+                metrics=Metrics(center_px=(cx0, cy0), roi_board_radius=r_od),
+                overlay_adjust=OverlayAdjust(
+                    rotation_deg=rot,
+                    r_outer_double_px=float(r_od * float(getattr(self, "overlay_scale", 1.0))),
+                    center_dx_px=dx,
+                    center_dy_px=dy,
+                ),
+                roi_adjust=ROIAdjust(),  # neutral (unbekannt)
+            )
+            self.homography_eff = compute_effective_H(self.uc)
+            self._sync_mapper_from_unified()
+        except Exception:
+            # Wenn das fehlschlägt, läuft Legacy ohne Unified weiter.
+            pass
 
     # ----- Pipeline -----
     def process_frame(self, frame):
@@ -1069,6 +1248,21 @@ class DartVisionApp:
              self._hough_refine_center(roi_frame)
         return roi_frame, motion_detected, fg_mask, impact
 
+    def _overlay_calib(self) -> Calibration:
+        """Aktuelle Overlay-Geometrie (Single Source)."""
+        if self.board_mapper is not None:
+            return self.board_mapper.calib
+        # Fallback, falls Mapper noch nicht steht, aber UC vorhanden ist
+        if self.uc is not None:
+            return mapper_calibration_from_unified(self.uc)
+        # letzter Fallback: Legacy (nur damit nix crasht)
+        return Calibration(
+            cx=float(ROI_CENTER[0] + self.overlay_center_dx),
+            cy=float(ROI_CENTER[1] + self.overlay_center_dy),
+            r_outer_double_px=float(self.roi_board_radius) * float(self.overlay_scale),
+            rotation_deg=float(self.overlay_rot_deg),
+        )
+
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, impact):
         disp_main = cv2.resize(frame, (800, 600))
         disp_roi = cv2.resize(roi_frame, ROI_SIZE)
@@ -1094,26 +1288,33 @@ class DartVisionApp:
 
         # Board rings (ROI)
         # ROI-Overlays nach Modus
-        if self.homography is not None:
+        if self.homography is not None or self.homography_eff is not None:
             # 1) Motion zuerst (falls aktiv)
             # (Hast du schon oben gemacht – gut so)
 
             # 2) Einfache Referenzringe im RINGS/FULL Modus
             if self.overlay_mode >= OVERLAY_RINGS:
-                cx, cy, r_base = self._overlay_center_radius()
+                cal = self._overlay_calib()
+                cx = int(round(cal.cx))
+                cy = int(round(cal.cy))
+                r_base = int(round(cal.r_outer_double_px))  # absoluter Doppelaußenradius
+
                 # äußerer Doppelring (grün)
-                cv2.circle(disp_roi, (cx, cy), r_base, (0, 255, 0), 2, cv2.LINE_AA)
-                # weitere Referenzringe (gelb) skaliert um r_base
-                for f in (0.05, 0.095, self.board_cfg.radii.r_triple_outer,
-                          self.board_cfg.radii.r_double_inner):
-                    cv2.circle(disp_roi, (cx, cy), max(1, int(r_base * float(f))), (255, 255, 0), 1, cv2.LINE_AA)
+                cv2.circle(disp_roi, (cx, cy), max(1, r_base), (0, 255, 0), 2, cv2.LINE_AA)
+                # weitere Referenzringe (gelb) relativ zu r_base (Board-Config)
+                for f in (self.board_cfg.radii.r_triple_outer,
+                          self.board_cfg.radii.r_double_inner,
+                          self.board_cfg.radii.r_bull_outer,
+                          self.board_cfg.radii.r_bull_inner):
+                    cv2.circle(disp_roi, (cx, cy), max(1, int(round(r_base * float(f)))), (255, 255, 0), 1, cv2.LINE_AA)
 
             # 3) Präzises Mapping nur im FULL-Modus
             if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
                 disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
                 disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
+                cal = self.board_mapper.calib
                 cv2.putText(disp_roi,
-                            f"cx:{ROI_CENTER[0] + self.overlay_center_dx:.1f} cy:{ROI_CENTER[1] + self.overlay_center_dy:.1f}",
+                            f"cx:{cal.cx:.1f} cy:{cal.cy:.1f}",
                             (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 220), 1, cv2.LINE_AA)
             # --- ALIGN-Modus: dicke Doppel-/Triple-Kreise + optional Auto-Hough ---
             if self.overlay_mode == OVERLAY_ALIGN:
@@ -1130,15 +1331,18 @@ class DartVisionApp:
                     r = int(self.roi_board_radius * self.overlay_scale)
                     cv2.circle(disp_roi, (ROI_CENTER[0], ROI_CENTER[1]), r, (0, 255, 0), 2, cv2.LINE_AA)
                 # Guideline-Kreise auf ROI
-                r_base = int(self.roi_board_radius * self.overlay_scale)
+                cal = self._overlay_calib()
+                cx = int(round(cal.cx))
+                cy = int(round(cal.cy))
+                r_base = int(round(cal.r_outer_double_px))
+
                 r_double_outer = int(r_base)
-                r_double_inner = int(r_base * self.board_cfg.radii.r_double_inner)
-                r_triple_outer = int(r_base * self.board_cfg.radii.r_triple_outer)
-                r_triple_inner = int(r_base * self.board_cfg.radii.r_triple_inner)
-                r_outer_bull = int(r_base * self.board_cfg.radii.r_bull_outer)
-                r_inner_bull = int(r_base * self.board_cfg.radii.r_bull_inner)
-                cx = int(ROI_CENTER[0] + self.overlay_center_dx)
-                cy = int(ROI_CENTER[1] + self.overlay_center_dy)
+                r_double_inner = int(round(r_base * self.board_cfg.radii.r_double_inner))
+                r_triple_outer = int(round(r_base * self.board_cfg.radii.r_triple_outer))
+                r_triple_inner = int(round(r_base * self.board_cfg.radii.r_triple_inner))
+                r_outer_bull = int(round(r_base * self.board_cfg.radii.r_bull_outer))
+                r_inner_bull = int(round(r_base * self.board_cfg.radii.r_bull_inner))
+
                 # dicke Linien für Ausrichtung
                 for rr, col, th in (
                         (r_double_outer, (0, 255, 0), 3),
@@ -1171,20 +1375,25 @@ class DartVisionApp:
 
         # Zeige rot/scale nur, wenn BoardMapper aktiv ist
         if self.board_mapper is not None:
-            cv2.putText(disp_roi, f"rot:{self.overlay_rot_deg:.1f}  scale:{self.overlay_scale:.3f}",
+            cal = self.board_mapper.calib
+            if self.uc is not None:
+                scale = float(cal.r_outer_double_px) / float(self.uc.metrics.roi_board_radius)
+            else:
+                scale = float(self.overlay_scale)  # Fallback
+            cv2.putText(disp_roi, f"rot:{cal.rotation_deg:.1f}  scale:{scale:.3f}",
                         (ROI_SIZE[0] - 180, 46),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-            # ROI Fine-tuning Status
-            cv2.putText(
-                disp_roi,
-                f"ROI SRT  r:{self.roi_rot_deg:+.2f}°  s:{self.roi_scale:.4f}  tx:{self.roi_tx:+.1f} ty:{self.roi_ty:+.1f}",
-                (ROI_SIZE[0] - 330, 86),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (220, 220, 220),
-                1,
-                cv2.LINE_AA
-            )
+           ## ROI Fine-tuning Status
+           #cv2.putText(
+           #    disp_roi,
+           #    f"ROI SRT  r:{self.roi_rot_deg:+.2f}°  s:{self.roi_scale:.4f}  tx:{self.roi_tx:+.1f} ty:{self.roi_ty:+.1f}",
+           #    (ROI_SIZE[0] - 330, 86),
+           #    cv2.FONT_HERSHEY_SIMPLEX,
+           #    0.5,
+           #    (220, 220, 220),
+           #    1,
+           #    cv2.LINE_AA
+           #)
         # Optional: zuletzt empfangenen Extended-Keycode (falls gesetzt)
         if getattr(self, "last_key_dbg", "") and self.overlay_mode == OVERLAY_FULL:
             cv2.putText(disp_roi, f"key:{self.last_key_dbg}",
@@ -1402,23 +1611,8 @@ class DartVisionApp:
                 elif key == ord('k'):  # down (nur wenn du Screenshot auf 's' lassen willst -> nimm z.B. ';' statt 's')
                     self.overlay_center_dy += 1.0;
                     self._sync_mapper()
-                elif key == ord('x'):
-                    try:
-                        cfg = load_calibration_yaml(CALIB_YAML) or {}
-                    except Exception:
-                        cfg = {}
-                    cfg.setdefault("overlay_adjust", {})
-                    cfg["overlay_adjust"]["rotation_deg"] = float(self.overlay_rot_deg)
-                    cfg["overlay_adjust"]["scale"] = float(self.overlay_scale)
-                    cfg["overlay_adjust"]["center_dx_px"] = float(self.overlay_center_dx)  # NEU
-                    cfg["overlay_adjust"]["center_dy_px"] = float(self.overlay_center_dy)  # NEU
-                    # Zusätzlich absoluter, bereits skalierter Doppelaußenradius:
-                    cfg["overlay_adjust"]["r_outer_double_px"] = float(self.roi_board_radius) * float(
-                        self.overlay_scale)  # NEU
-                    save_calibration_yaml(CALIB_YAML, cfg)
-                    logger.info(f"[OVERLAY] saved to {CALIB_YAML} (rot={self.overlay_rot_deg:.2f}, "
-                                f"scale={self.overlay_scale:.4f}, dx={self.overlay_center_dx:.1f}, "
-                                f"dy={self.overlay_center_dy:.1f}, rpx={cfg['overlay_adjust']['r_outer_double_px']:.1f})")
+                elif key in (ord('x'), ord('X')):
+                    self._save_calibration_unified()  # <— EINZEILER
 
                 if raw_key == 0xA0000 or raw_key == 0xA30000:
                     pass  # (nur als Beispiel: SHIFT-Flags, optional)

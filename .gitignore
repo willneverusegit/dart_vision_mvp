@@ -48,6 +48,10 @@ analysis_results/
 *.avi
 *.mov
 
+# runtime calibration data
+/calibration_unified.yaml
+/overlay.yaml
+
 # Config files (optional - je nachdem ob du configs sharen willst)
 config/calibration_config.yaml   # Enthält individuelle Kalibrierung
 *.log
