@@ -40,6 +40,7 @@ class DartImpact:
     confirmed_frame: int
     confirmation_count: int
     timestamp: float
+    refine_score: Optional[float] = None
 
 
 @dataclass
@@ -85,7 +86,18 @@ class DartDetectorConfig:
     candidate_history_size: int = 20
 
     # Motion mask pre-processing
-    motion_mask_smoothing_kernel: int = 5  # 0 to disable, odd numbers recommended
+    motion_mask_smoothing_kernel: int = 7  # 0 to disable, odd numbers recommended
+
+    # Impact-Refine (A-2)
+    refine_enabled: bool = True
+    refine_threshold: float = 0.45  # 0.35–0.50 sind gute Startwerte
+    refine_roi_size_px: int = 80  # Kantenprüfung in kleinem Fenster
+    refine_canny_lo: int = 60
+    refine_canny_hi: int = 180
+    refine_hough_thresh: int = 30  # Accumulator-Schwelle
+    refine_min_line_len: int = 10
+    refine_max_line_gap: int = 4
+
 
 from dataclasses import replace
 
@@ -198,7 +210,34 @@ class DartImpactDetector:
         best_candidate = candidates[0]
         self.candidate_history.append(best_candidate)
 
-        # Check temporal stability
+        # >>> A-2: Refine-Gate (sekundäre Prüfung per Kanten/Linien im kleinen ROI)
+        if getattr(self.config, "refine_enabled", True):
+            rs = self._refine_impact_in_roi(
+                frame,
+                # HINWEIS: Hier 'frame' benutzen, wenn best_candidate.position Bildkoordinaten dieses Frames sind.
+                (int(best_candidate.position[0]), int(best_candidate.position[1])),
+                debug=False  # oder z.B. debug=self.config.debug falls vorhanden
+            )
+            # Visual Debug Overlay (zeigt Refine-Score am Kandidaten)
+            cx, cy = int(best_candidate.position[0]), int(best_candidate.position[1])
+            color = (0, 255, 0) if rs >= self.config.refine_threshold else (0, 0, 255)
+            cv2.putText(
+                frame, f"Ref:{rs:.2f}", (cx, cy - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA
+            )
+            if rs < float(getattr(self.config, "refine_threshold", 0.35)):
+                # Kandidat verwerfen – KEIN Tracking-Update/Kühlzeit
+                if __debug__:
+                    logger.debug(
+                        f"[ImpactRefine] reject pos={best_candidate.position} score={rs:.2f} "
+                        f"< {self.config.refine_threshold:.2f}"
+                    )
+                self._reset_tracking()
+                return None
+            # (optional) rs weiterreichen/später loggen:
+            # best_candidate.refine_score = float(rs)
+
+        # Check temporal stability (nur wenn refine bestanden)
         if self._is_same_position(best_candidate, self.current_candidate):
             self.confirmation_count += 1
         else:
@@ -213,7 +252,9 @@ class DartImpactDetector:
                 first_detected_frame=self.current_candidate.frame_index,
                 confirmed_frame=frame_index,
                 confirmation_count=self.confirmation_count,
-                timestamp=timestamp
+                timestamp=timestamp,
+                # optional:
+                refine_score=float(rs) if 'rs' in locals() else None,
             )
 
             self.confirmed_impacts.append(impact)
@@ -428,6 +469,65 @@ class DartImpactDetector:
         candidates.sort(key=lambda c: c.confidence, reverse=True)
 
         return candidates
+
+    def _refine_impact_in_roi(
+            self,
+            frame_bgr: np.ndarray,
+            center_xy: tuple[int, int],
+            debug: bool = False
+    ) -> float:
+        """
+        Sekundäres Gate: prüft im kleinen ROI um 'center_xy', ob dart-ähnliche
+        Kanten/Linien vorhanden sind. Rückgabe: Score 0..1 (>= threshold => ok).
+        """
+        x, y = center_xy
+        h, w = frame_bgr.shape[:2]
+        R = int(self.config.refine_roi_size_px)
+        x0 = max(0, x - R // 2)
+        y0 = max(0, y - R // 2)
+        x1 = min(w, x + R // 2)
+        y1 = min(h, y + R // 2)
+
+        roi = frame_bgr[y0:y1, x0:x1]
+        if roi.size == 0:
+            return 0.0
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        edges = cv2.Canny(gray, self.config.refine_canny_lo, self.config.refine_canny_hi)
+
+        lines = cv2.HoughLinesP(
+            edges, 1, np.pi / 180,
+            self.config.refine_hough_thresh,
+            minLineLength=self.config.refine_min_line_len,
+            maxLineGap=self.config.refine_max_line_gap
+        )
+        if lines is None:
+            return 0.0
+
+        # Winkel/Vertikalität bewerten (Pfeile stehen meist ~radial => im ROI oft steil)
+        orientations = []
+        for ln in lines:
+            x1, y1, x2, y2 = ln[0]
+            dx, dy = x2 - x1, y2 - y1
+            L = float(np.hypot(dx, dy))
+            if L < 5:
+                continue
+            a = abs(np.degrees(np.arctan2(dy, dx)))  # 0..180
+            # Distanz zur "steilen" Richtung (0 oder 90 ist ok – wir nehmen die bessere)
+            orientations.append(1.0 - min(abs(a - 90.0), a) / 90.0)
+        if not orientations:
+            return 0.0
+
+        vert_score = float(np.mean(orientations))  # 0..1
+        density = min(len(orientations) / 10.0, 1.0)  # saturiert bei 10 Linien
+        score = 0.6 * vert_score + 0.4 * density  # gewichtete Mischung
+
+        if debug:
+            dbg = np.hstack([gray, edges])
+            cv2.imshow("Refine-ROI", dbg)
+
+        return float(score)
 
     def _is_same_position(
             self,

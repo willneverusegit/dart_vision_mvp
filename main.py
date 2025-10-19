@@ -410,6 +410,58 @@ class DartVisionApp:
         self.last_msg = f"Hough OK: d=({dx_meas:+.1f},{dy_meas:+.1f}) r={r} → cx={self.board_mapper.calib.cx:.1f}, cy={self.board_mapper.calib.cy:.1f}, s={self.overlay_scale:.4f}"
         return True
 
+    def _hough_refine_rings(self, roi_bgr: np.ndarray) -> tuple[float, float, float] | None:
+        """
+        Findet konzentrische Ringe via HoughCircles (im ROI-Panel).
+        Liefert (cx, cy, r_double_outer_px) oder None.
+        """
+        if roi_bgr is None or roi_bgr.size == 0:
+            return None
+
+        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 1.2)
+
+        # Erwartungsbereich um aktuellen Wert (±15%)
+        if self.board_mapper is not None:
+            r0 = float(self.board_mapper.calib.r_outer_double_px)
+        elif self.uc is not None:
+            r0 = float(self.uc.overlay_adjust.r_outer_double_px)
+        else:
+            r0 = float(self.roi_board_radius) * float(self.overlay_scale)
+
+        rmin = max(10, int(r0 * 0.85))
+        rmax = int(r0 * 1.15)
+
+        # Hough-Parameter: ggf. bei kontrastarmen Bildern param2 kleiner (30–34) wählen
+        circles = cv2.HoughCircles(
+            gray, cv2.HOUGH_GRADIENT,
+            dp=1.2, minDist=20,
+            param1=120, param2=35,
+            minRadius=rmin, maxRadius=rmax
+        )
+        if circles is None:
+            return None
+
+        # (N,3): x,y,r – wir wählen den größten Kreis als Doppel-Außen
+        c = np.uint16(np.around(circles[0]))
+        xyr = max(c, key=lambda k: k[2])
+        cx, cy, r_out = float(xyr[0]), float(xyr[1]), float(xyr[2])
+
+        # Optionales Mitteln über nahe Kreise (stabilisiert)
+        close = [k for k in c if abs(float(k[2]) - r_out) < r0 * 0.03]
+        if len(close) >= 2:
+            cx = float(np.mean([k[0] for k in close]))
+            cy = float(np.mean([k[1] for k in close]))
+            r_out = float(np.mean([k[2] for k in close]))
+
+        # (Optional) Debug-Overlay
+        if getattr(self, "show_debug", False):
+            dbg = roi_bgr.copy()
+            cv2.circle(dbg, (int(round(cx)), int(round(cy))), int(round(r_out)), (0, 255, 0), 2, cv2.LINE_AA)
+            cv2.imshow("Hough-Rings (debug)", dbg)
+
+        return cx, cy, r_out
+
     def _hud_compute(self, gray: np.ndarray):
         # Helligkeit, Fokus-Proxy (Laplacian-Var), Kantenanteil in %
         b = float(np.mean(gray))
@@ -1356,7 +1408,17 @@ class DartVisionApp:
 
                 # Auto-Hough im ALIGN-Modus (z. B. alle 10 Frames)
                 if self.align_auto and (self.frame_count % 10 == 0):
-                    _ = self._hough_refine_center(roi_frame)
+                    res = self._hough_refine_rings(roi_frame)
+                    if res is not None and self.uc is not None:
+                        cx, cy, r_out = res
+                        base_cx, base_cy = self.uc.metrics.center_px
+                        self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
+                        self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
+                        self.uc.overlay_adjust.r_outer_double_px = float(r_out)
+                        self.homography_eff = compute_effective_H(self.uc)
+                        self._sync_mapper_from_unified()
+                        save_unified_calibration(self.calib_path, self.uc)
+
                 # HUD rechts oben
                 cv2.putText(disp_roi, "ALIGN", (ROI_SIZE[0] - 180, 24),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
@@ -1581,17 +1643,28 @@ class DartVisionApp:
                         self.board_mapper.calib.cy = float(ROI_CENTER[1])
                         self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius)
                     logger.info("[OVERLAY] reset center/scale")
-                elif key == ord('t'):
-                    # einmalige automatische Ausrichtung via Hough
-                    changed = self._hough_refine_center(roi_frame)
-                    self._sync_mapper()
-                    if changed:
-                        logger.info("[HOUGH] overlay refined: "
-                                    f"cx={ROI_CENTER[0] + self.overlay_center_dx:.1f}, "
-                                    f"cy={ROI_CENTER[1] + self.overlay_center_dy:.1f}, "
-                                    f"scale={self.overlay_scale:.4f}")
+                elif key in (ord('t'), ord('T')):
+                    res = self._hough_refine_rings(roi_frame)
+                    if res is None:
+                        logger.info("[HoughRings] no circles detected in current ROI")
                     else:
-                        logger.info("[HOUGH] no update")
+                        cx, cy, r_out = res
+                        if self.uc is None:
+                            logger.warning("[HoughRings] Unified calib not present in memory.")
+                        else:
+                            # center_dx/dy sind Offsets zur Basismitte (metrics.center_px)
+                            base_cx, base_cy = self.uc.metrics.center_px
+                            self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
+                            self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
+                            self.uc.overlay_adjust.r_outer_double_px = float(r_out)
+
+                            # Eff. H aktualisieren + Mapper syncen + speichern
+                            self.homography_eff = compute_effective_H(self.uc)
+                            if hasattr(self, "_sync_mapper_from_unified"):
+                                self._sync_mapper_from_unified()
+                        save_unified_calibration(self.calib_path, self.uc)
+
+                        logger.info("[HoughRings] cx=%.1f cy=%.1f rOD=%.1f", cx, cy, r_out)
                 elif key == ord('z'):
                     self.align_auto = not self.align_auto
                     logger.info(f"[ALIGN] auto={'ON' if self.align_auto else 'OFF'} (mode must be ALIGN to run)")

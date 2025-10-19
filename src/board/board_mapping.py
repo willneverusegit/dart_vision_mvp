@@ -38,8 +38,9 @@ class BoardMapper:
         # Apply calibration rotation (positive CCW), then rebase to theta0 and direction
         theta = (theta - self.calib.rotation_deg) % 360.0
 
-        # Rebase to theta0
-        theta_rel = (theta - self.cfg.angles.theta0_deg) % 360.0
+        # Rebase to effective theta0 (Grenze oder Mitte je nach config)
+        theta0 = self.cfg.angles.theta0_effective(self.cfg.sectors)
+        theta_rel = (theta - theta0) % 360.0
 
         if self.cfg.angles.clockwise:
             theta_rel = (360.0 - theta_rel) % 360.0
@@ -51,7 +52,9 @@ class BoardMapper:
         theta = theta_rel_deg
         if self.cfg.angles.clockwise:
             theta = (360.0 - theta) % 360.0
-        theta = (theta + self.cfg.angles.theta0_deg + self.calib.rotation_deg) % 360
+        theta0 = self.cfg.angles.theta0_effective(self.cfg.sectors)
+        theta = (theta + theta0 + self.calib.rotation_deg) % 360
+
         return theta
 
     # --- ring classification ---

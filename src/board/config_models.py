@@ -47,9 +47,18 @@ class UnifiedCalibration(BaseModel):
 
 
 class Angles(BaseModel):
-    theta0_deg: float = 90.0
+    theta0_deg: float = 90.0         # geometrische 0° (Sektor-Grenze an 12 Uhr)
     clockwise: bool = True
     tolerance_deg: float = 2.0
+    center_on_mid: bool = True       # NEU: Sektor-Mitten statt -Grenzen verwenden
+
+    def theta0_effective(self, sectors: "Sectors") -> float:
+        """
+        Effektiver Startwinkel für die Sektor-Geometrie.
+        Wenn center_on_mid=True → um width_deg/2 (i.d.R. 9°) verschieben.
+        """
+        return float(self.theta0_deg - (sectors.width_deg * 0.5 if self.center_on_mid else 0.0))
+
 
 class Radii(BaseModel):
     r_bull_inner: float = 0.02
