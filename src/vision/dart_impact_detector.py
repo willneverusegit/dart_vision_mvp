@@ -117,6 +117,7 @@ class DartDetectorConfig:
     morph_open_ksize: int = 3
     morph_close_ksize: int = 5
     motion_min_white_pct: float = 0.02  # 0.02% des ROI reichen als Aktivität
+    motion_min_white_frac: float = 0.015
 
 
 from dataclasses import replace
@@ -143,6 +144,10 @@ DETECTOR_PRESETS = {
 
         # dein bisheriger „Allrounder“
         "balanced": dict(
+            motion_otsu_bias=+14,
+            morph_open_ksize=3,
+            morph_close_ksize=9,
+            motion_min_white_frac = 0.01,
             min_area=10, max_area=1000,
             min_aspect_ratio=0.3, max_aspect_ratio=3.0,
             min_solidity=0.10, max_solidity=0.95,
@@ -153,7 +158,7 @@ DETECTOR_PRESETS = {
             circularity_weight=0.35, solidity_weight=0.20,
             extent_weight=0.15, edge_weight=0.15, aspect_ratio_weight=0.15,
             confirmation_frames=3, position_tolerance_px=20,
-            cooldown_frames=30, cooldown_radius_px=50,
+            cooldown_frames=20, cooldown_radius_px=50,
             candidate_history_size=20, motion_mask_smoothing_kernel=5,
         ),
 
@@ -169,36 +174,11 @@ DETECTOR_PRESETS = {
             circularity_weight=0.35, solidity_weight=0.20,
             extent_weight=0.15, edge_weight=0.10, aspect_ratio_weight=0.20,
             confirmation_frames=4, position_tolerance_px=18,
-            cooldown_frames=40, cooldown_radius_px=55,
+            cooldown_frames=20, cooldown_radius_px=55,
             candidate_history_size=24, motion_mask_smoothing_kernel=7,
         ),
     }
-def _preprocess_motion_mask(self, motion_mask: np.ndarray) -> np.ndarray:
-    """Adaptive Binarisierung + Morphologie für stabilere Konturen."""
-    mm = motion_mask
-    if mm.ndim == 3:
-        mm = cv2.cvtColor(mm, cv2.COLOR_BGR2GRAY)
-    if not self.config.motion_adaptive:
-        return mm
 
-    # Otsu + Bias
-    _t, _ = cv2.threshold(mm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    t = int(np.clip(_t + self.config.motion_otsu_bias, 0, 255))
-    _, bw = cv2.threshold(mm, t, 255, cv2.THRESH_BINARY)
-
-    # Morph Open → Close
-    k1 = max(1, int(self.config.morph_open_ksize));  k1 += (k1 % 2 == 0)
-    k2 = max(1, int(self.config.morph_close_ksize)); k2 += (k2 % 2 == 0)
-    bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN,  cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k1, k1)))
-    bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2)))
-
-    # Entferne sehr kleine Blobs (zusätzlich zu min_area/max_area im späteren Schritt)
-    num, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
-    for i in range(1, num):  # 0 ist Hintergrund
-        if stats[i, cv2.CC_STAT_AREA] < self.config.motion_min_area_px:
-            bw[labels == i] = 0
-
-    return bw.astype(np.uint8, copy=False)
 
 def apply_detector_preset(cfg: DartDetectorConfig, name: str) -> DartDetectorConfig:
         name = (name or "").lower()
@@ -223,6 +203,38 @@ class DartImpactDetector:
 
         # ✅ NEW: Cooldown tracking
         self.cooldown_regions: List[Tuple[Tuple[int, int], int]] = []  # (position, frame_until)
+        self.last_processed_mask = None  # for debug: expose processed motion mask to UI
+
+    def _preprocess_motion_mask(self, motion_mask: np.ndarray) -> np.ndarray:
+        """Adaptive binarization + morphology for stable motion contours."""
+        mm = motion_mask
+        if mm.ndim == 3:
+            mm = cv2.cvtColor(mm, cv2.COLOR_BGR2GRAY)
+
+        if not getattr(self.config, "motion_adaptive", True):
+            return mm.astype(np.uint8, copy=False)
+
+        # --- Adaptive Otsu + Bias ---
+        _t, _ = cv2.threshold(mm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        t = int(np.clip(_t + self.config.motion_otsu_bias, 0, 255))
+        _, bw = cv2.threshold(mm, t, 255, cv2.THRESH_BINARY)
+
+        # --- Morphology (open→close) ---
+        k1 = max(1, int(self.config.morph_open_ksize));  k1 += (k1 % 2 == 0)
+        k2 = max(1, int(self.config.morph_close_ksize)); k2 += (k2 % 2 == 0)
+        bw = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k1, k1)))
+        bw = cv2.morphologyEx(bw, cv2.MORPH_CLOSE,
+                              cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k2, k2)))
+
+        # --- remove micro-blobs ---
+        num, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
+        for i in range(1, num):  # 0 = background
+            if stats[i, cv2.CC_STAT_AREA] < getattr(self.config, "motion_min_area_px", 24):
+                bw[labels == i] = 0
+
+        return bw.astype(np.uint8, copy=False)
+
 
     def detect_dart(
             self,
@@ -241,10 +253,14 @@ class DartImpactDetector:
 
         # Pre-process motion mask to stabilise contours
         processed_mask = self._preprocess_motion_mask(motion_mask)
+        # keep a copy for debug overlay
+        self.last_processed_mask = processed_mask.copy()
+
         # Quick gate: sehr wenig weiße Pixel? → sparen
         if motion_mask is not None:
-            white_pct = 100.0 * (float(np.count_nonzero(motion_mask)) / float(motion_mask.size))
-            if white_pct < getattr(self.config, "motion_min_white_pct", 0.02):
+            # Quick-gate: skip if too little motion area
+            white_frac = float(np.count_nonzero(processed_mask)) / float(processed_mask.size)
+            if white_frac < getattr(self.config, "motion_min_white_frac", 0.02):  # 2 % of ROI
                 self._reset_tracking()
                 return None
 
@@ -357,24 +373,6 @@ class DartImpactDetector:
 
         return False
 
-    def _preprocess_motion_mask(self, motion_mask: np.ndarray) -> np.ndarray:
-        """Reduce noise in motion mask before contour extraction."""
-
-        kernel_size = self.config.motion_mask_smoothing_kernel
-        if kernel_size and kernel_size > 1:
-            if kernel_size % 2 == 0:
-                kernel_size += 1
-
-            blurred = cv2.GaussianBlur(motion_mask, (kernel_size, kernel_size), 0)
-            _, thresh = cv2.threshold(
-                blurred,
-                0,
-                255,
-                cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
-            return thresh
-
-        return motion_mask
 
     def _find_dart_shapes(
             self,

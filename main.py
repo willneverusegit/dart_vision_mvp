@@ -167,6 +167,7 @@ class DartVisionApp:
         self.frame_count = 0
         self.session_start = time.time()
         self.show_mask = False  # per Hotkey toggeln
+        self.show_mask_debug = False
 
         # HUD buffers (Glättung)
         self._hud_b = deque(maxlen=15)  # Brightness
@@ -1477,6 +1478,15 @@ class DartVisionApp:
                 except Exception as _e:
                     if self.show_debug:
                         logger.debug(f"[HM] update skipped: {_e}")
+
+        # Show processed motion mask for tuning (aus dem Detector)
+        if self.show_mask_debug and self.dart is not None and getattr(self.dart, "last_processed_mask",
+                                                                      None) is not None:
+            pm = self.dart.last_processed_mask
+            pm_show = pm if (pm.shape[1] == ROI_SIZE[0] and pm.shape[0] == ROI_SIZE[1]) else cv2.resize(pm, ROI_SIZE,
+                                                                                                        interpolation=cv2.INTER_NEAREST)
+            cv2.imshow("MotionMask (processed)", pm_show)
+
         # 🟡 Auto-Align (alle 15 Frames, nur im ALIGN-Modus)
         if self.overlay_mode == OVERLAY_ALIGN and self.align_auto and (self.frame_count % 15 == 0):
             # 1) Ringe/Hough zuerst → Center/Radius stabilisieren
@@ -1554,6 +1564,18 @@ class DartVisionApp:
                 disp_roi, 1.0,
                 cv2.cvtColor(self._roi_annulus_mask, cv2.COLOR_GRAY2BGR),
                 0.25, 0.0
+            )
+
+        if getattr(self, "show_debug", False) and self.dart is not None:
+            cfg = self.dart.config
+            cv2.putText(
+                disp_roi,
+                f"MotionTune  bias:{int(getattr(cfg, 'motion_otsu_bias', 0)):+d}  "
+                f"open:{int(getattr(cfg, 'morph_open_ksize', 3))}  "
+                f"close:{int(getattr(cfg, 'morph_close_ksize', 5))}  "
+                f"minWhite:{getattr(cfg, 'motion_min_white_frac', 0.02) * 100:.1f}%",
+                (10, ROI_SIZE[1] - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA
             )
 
         # Board rings (ROI)
@@ -1797,6 +1819,58 @@ class DartVisionApp:
                 # 4) ASCII-Tasten (auf 'key' prüfen)
                 if key == ord('q'):
                     self.running = False
+                # --- Live Tuning: Motion-Segmentation (konfliktfreie Keys) ---
+                elif key == ord('b'):  # bias -
+                    if self.dart is not None:
+                        self.dart.config.motion_otsu_bias = int(max(-32, self.dart.config.motion_otsu_bias - 1))
+                        logger.info(f"[Tune] Otsu bias = {self.dart.config.motion_otsu_bias:+d}")
+                elif key == ord('B'):  # bias +
+                    if self.dart is not None:
+                        self.dart.config.motion_otsu_bias = int(min(64, self.dart.config.motion_otsu_bias + 1))
+                        logger.info(f"[Tune] Otsu bias = {self.dart.config.motion_otsu_bias:+d}")
+                elif key == ord('f'):  # open -
+                    if self.dart is not None:
+                        k = max(1, int(self.dart.config.morph_open_ksize) - 2)
+                        if k % 2 == 0: k -= 1
+                        self.dart.config.morph_open_ksize = max(1, k)
+                        logger.info(f"[Tune] Morph OPEN = {self.dart.config.morph_open_ksize}")
+                elif key == ord('F'):  # open +
+                    if self.dart is not None:
+                        k = int(self.dart.config.morph_open_ksize) + 2
+                        if k % 2 == 0: k += 1
+                        self.dart.config.morph_open_ksize = min(31, k)
+                        logger.info(f"[Tune] Morph OPEN = {self.dart.config.morph_open_ksize}")
+                elif key == ord('n'):  # close -
+                    if self.dart is not None:
+                        k = max(1, int(self.dart.config.morph_close_ksize) - 2)
+                        if k % 2 == 0: k -= 1
+                        self.dart.config.morph_close_ksize = max(1, k)
+                        logger.info(f"[Tune] Morph CLOSE = {self.dart.config.morph_close_ksize}")
+                elif key == ord('N'):  # close +
+                    if self.dart is not None:
+                        k = int(self.dart.config.morph_close_ksize) + 2
+                        if k % 2 == 0: k += 1
+                        self.dart.config.morph_close_ksize = min(31, k)
+                        logger.info(f"[Tune] Morph CLOSE = {self.dart.config.morph_close_ksize}")
+                elif key == ord('w'):  # minWhite -
+                    if self.dart is not None:
+                        v = float(getattr(self.dart.config, "motion_min_white_frac", 0.02)) - 0.002
+                        self.dart.config.motion_min_white_frac = max(0.0, round(v, 4))
+                        logger.info(f"[Tune] minWhite = {self.dart.config.motion_min_white_frac * 100:.2f}%")
+                elif key == ord('W'):  # minWhite +
+                    if self.dart is not None:
+                        v = float(getattr(self.dart.config, "motion_min_white_frac", 0.02)) + 0.002
+                        self.dart.config.motion_min_white_frac = min(0.20, round(v, 4))
+                        logger.info(f"[Tune] minWhite = {self.dart.config.motion_min_white_frac * 100:.2f}%")
+                # --- Toggle processed-mask debug view (Shift+V) ---
+                elif key == ord('V'):
+                    self.show_mask_debug = not getattr(self, "show_mask_debug", False)
+                    if not self.show_mask_debug:
+                        try:
+                            cv2.destroyWindow("MotionMask (processed)")
+                        except Exception:
+                            pass
+                    logger.info("Processed MotionMask window: %s", "ON" if self.show_mask_debug else "OFF")
                 elif key == ord('1'):
                     self.dart.config = apply_detector_preset(self.dart.config, "aggressive")
                     self.current_preset = "aggressive"
@@ -1847,7 +1921,6 @@ class DartVisionApp:
                 elif key ==ord('?'):  # Shift+/, oder H als Alternative
                     self.show_help = not self.show_help
                     logger.info(f"[HELP] overlay -> {'ON' if self.show_help else 'OFF'}")
-
                 elif key == ord('R'):
                     self.overlay_center_dx = 0.0
                     self.overlay_center_dy = 0.0
