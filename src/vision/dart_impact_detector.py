@@ -116,68 +116,81 @@ class DartDetectorConfig:
     motion_min_area_px: int = 24  # nach Morphologie erneut prüfen
     morph_open_ksize: int = 3
     morph_close_ksize: int = 5
-    motion_min_white_pct: float = 0.02  # 0.02% des ROI reichen als Aktivität
     motion_min_white_frac: float = 0.015
 
 
 from dataclasses import replace
 
 DETECTOR_PRESETS = {
-        # finds more, toleranter, etwas mehr False Positives möglich
-        "aggressive": dict(
-            motion_otsu_bias=+4,
-            morph_open_ksize=3,
-            morph_close_ksize=5,
-            min_area=6, max_area=1600,
-            min_aspect_ratio=0.25, max_aspect_ratio=3.5,
-            min_solidity=0.08, max_solidity=0.98,
-            min_extent=0.04, max_extent=0.80,
-            min_edge_density=0.015, max_edge_density=0.40,
-            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.8,
-            edge_canny_threshold1=30, edge_canny_threshold2=90,
-            circularity_weight=0.30, solidity_weight=0.20,
-            extent_weight=0.15, edge_weight=0.20, aspect_ratio_weight=0.15,
-            confirmation_frames=2, position_tolerance_px=24,
-            cooldown_frames=25, cooldown_radius_px=45,
-            candidate_history_size=20, motion_mask_smoothing_kernel=7,
-        ),
+    "aggressive": dict(
+        # Motion
+        motion_adaptive=True,
+        motion_otsu_bias=+6,          # etwas empfindlicher als balanced
+        morph_open_ksize=3,
+        morph_close_ksize=7,
+        motion_min_white_frac=0.008,  # 0.8% reicht hier
+        # Shapes
+        min_area=6, max_area=1600,
+        min_aspect_ratio=0.25, max_aspect_ratio=3.6,
+        min_solidity=0.08,  max_solidity=0.98,
+        min_extent=0.04,    max_extent=0.80,
+        min_edge_density=0.012, max_edge_density=0.42,
+        preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.9,
+        edge_canny_threshold1=28, edge_canny_threshold2=90,
+        # Confidence weights
+        circularity_weight=0.28, solidity_weight=0.22,
+        extent_weight=0.14, edge_weight=0.22, aspect_ratio_weight=0.14,
+        # Temporal
+        confirmation_frames=2, position_tolerance_px=24,
+        cooldown_frames=22, cooldown_radius_px=42,
+        candidate_history_size=20, motion_mask_smoothing_kernel=5,
+        # Refine
+        refine_enabled=True, refine_threshold=0.40
+    ),
 
-        # dein bisheriger „Allrounder“
-        "balanced": dict(
-            motion_otsu_bias=+14,
-            morph_open_ksize=3,
-            morph_close_ksize=9,
-            motion_min_white_frac = 0.01,
-            min_area=10, max_area=1000,
-            min_aspect_ratio=0.3, max_aspect_ratio=3.0,
-            min_solidity=0.10, max_solidity=0.95,
-            min_extent=0.05, max_extent=0.75,
-            min_edge_density=0.02, max_edge_density=0.35,
-            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.5,
-            edge_canny_threshold1=40, edge_canny_threshold2=120,
-            circularity_weight=0.35, solidity_weight=0.20,
-            extent_weight=0.15, edge_weight=0.15, aspect_ratio_weight=0.15,
-            confirmation_frames=3, position_tolerance_px=20,
-            cooldown_frames=20, cooldown_radius_px=50,
-            candidate_history_size=20, motion_mask_smoothing_kernel=5,
-        ),
+    "balanced": dict(
+        motion_adaptive=True,
+        motion_otsu_bias=+10,         # dein Raum wirkte kontrastarm -> etwas höher
+        morph_open_ksize=5,
+        morph_close_ksize=9,
+        motion_min_white_frac=0.012,  # ~1.2 %
+        min_area=10, max_area=1100,
+        min_aspect_ratio=0.30, max_aspect_ratio=3.0,
+        min_solidity=0.10,  max_solidity=0.95,
+        min_extent=0.05,    max_extent=0.75,
+        min_edge_density=0.018, max_edge_density=0.36,
+        preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.6,
+        edge_canny_threshold1=38, edge_canny_threshold2=120,
+        circularity_weight=0.33, solidity_weight=0.20,
+        extent_weight=0.15, edge_weight=0.17, aspect_ratio_weight=0.15,
+        confirmation_frames=3, position_tolerance_px=20,
+        cooldown_frames=28, cooldown_radius_px=48,
+        candidate_history_size=22, motion_mask_smoothing_kernel=5,
+        refine_enabled=True, refine_threshold=0.45
+    ),
 
-        # strenger, sehr robuste Treffer, weniger False Positives
-        "stable": dict(
-            min_area=14, max_area=900,
-            min_aspect_ratio=0.35, max_aspect_ratio=2.6,
-            min_solidity=0.12, max_solidity=0.92,
-            min_extent=0.06, max_extent=0.70,
-            min_edge_density=0.025, max_edge_density=0.30,
-            preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.3,
-            edge_canny_threshold1=55, edge_canny_threshold2=165,
-            circularity_weight=0.35, solidity_weight=0.20,
-            extent_weight=0.15, edge_weight=0.10, aspect_ratio_weight=0.20,
-            confirmation_frames=4, position_tolerance_px=18,
-            cooldown_frames=20, cooldown_radius_px=55,
-            candidate_history_size=24, motion_mask_smoothing_kernel=7,
-        ),
-    }
+    "stable": dict(
+        motion_adaptive=True,
+        motion_otsu_bias=+14,         # robust gegen Flackern/Noise
+        morph_open_ksize=7,
+        morph_close_ksize=11,
+        motion_min_white_frac=0.015,  # ~1.5 %
+        min_area=14, max_area=900,
+        min_aspect_ratio=0.34, max_aspect_ratio=2.6,
+        min_solidity=0.12,  max_solidity=0.92,
+        min_extent=0.06,    max_extent=0.68,
+        min_edge_density=0.022, max_edge_density=0.32,
+        preferred_aspect_ratio=0.35, aspect_ratio_tolerance=1.35,
+        edge_canny_threshold1=50, edge_canny_threshold2=165,
+        circularity_weight=0.35, solidity_weight=0.20,
+        extent_weight=0.15, edge_weight=0.12, aspect_ratio_weight=0.18,
+        confirmation_frames=4, position_tolerance_px=18,
+        cooldown_frames=35, cooldown_radius_px=55,
+        candidate_history_size=24, motion_mask_smoothing_kernel=7,
+        refine_enabled=True, refine_threshold=0.50
+    ),
+}
+
 
 
 def apply_detector_preset(cfg: DartDetectorConfig, name: str) -> DartDetectorConfig:
