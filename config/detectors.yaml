@@ -1,0 +1,196 @@
+schema_version: '1.0.0'
+motion:
+  var_threshold: 50
+  detect_shadows: true
+  history: 500
+  motion_pixel_threshold: 500
+  min_contour_area: 100
+  max_contour_area: 5000
+  morph_kernel_size: 3
+  event_history_size: 10
+
+dart_detector:
+  # Shape constraints
+  min_area: 10
+  max_area: 1000
+  min_aspect_ratio: 0.3
+  max_aspect_ratio: 3.0
+  
+  # Advanced shape heuristics
+  min_solidity: 0.1
+  max_solidity: 0.95
+  min_extent: 0.05
+  max_extent: 0.75
+  min_edge_density: 0.02
+  max_edge_density: 0.35
+  preferred_aspect_ratio: 0.35
+  aspect_ratio_tolerance: 1.5
+  
+  # Edge detection
+  edge_canny_threshold1: 40
+  edge_canny_threshold2: 120
+  
+  # Confidence weighting
+  circularity_weight: 0.35
+  solidity_weight: 0.2
+  extent_weight: 0.15
+  edge_weight: 0.15
+  aspect_ratio_weight: 0.15
+  
+  # Temporal confirmation
+  confirmation_frames: 3
+  position_tolerance_px: 20
+  
+  # Cooldown
+  cooldown_frames: 30
+  cooldown_radius_px: 50
+  
+  # History
+  candidate_history_size: 20
+  
+  # Motion preprocessing
+  motion_mask_smoothing_kernel: 7
+  motion_adaptive: true
+  motion_otsu_bias: 8
+  motion_min_area_px: 24
+  morph_open_ksize: 3
+  morph_close_ksize: 5
+  motion_min_white_frac: 0.015
+  
+  # Refine
+  refine_enabled: true
+  refine_threshold: 0.45
+  refine_roi_size_px: 80
+  refine_canny_lo: 60
+  refine_canny_hi: 180
+  refine_hough_thresh: 30
+  refine_min_line_len: 10
+  refine_max_line_gap: 4
+  
+  # Tip refine
+  tip_refine_enabled: true
+  tip_roi_px: 36
+  tip_search_px: 14
+  tip_max_shift_px: 16
+  tip_edge_weight: 0.6
+  tip_dark_weight: 0.4
+  tip_canny_lo: 60
+  tip_canny_hi: 180
+  
+  # NEW: Convexity-Gate (Proposal 1)
+  convexity_gate_enabled: true
+  convexity_min_ratio: 0.70
+  hierarchy_filter_enabled: true
+
+# Presets
+presets:
+  aggressive:
+    motion_adaptive: true
+    motion_otsu_bias: 6
+    morph_open_ksize: 3
+    morph_close_ksize: 7
+    motion_min_white_frac: 0.008
+    min_area: 6
+    max_area: 1600
+    min_aspect_ratio: 0.25
+    max_aspect_ratio: 3.6
+    min_solidity: 0.08
+    max_solidity: 0.98
+    min_extent: 0.04
+    max_extent: 0.80
+    min_edge_density: 0.012
+    max_edge_density: 0.42
+    preferred_aspect_ratio: 0.35
+    aspect_ratio_tolerance: 1.9
+    edge_canny_threshold1: 28
+    edge_canny_threshold2: 90
+    circularity_weight: 0.28
+    solidity_weight: 0.22
+    extent_weight: 0.14
+    edge_weight: 0.22
+    aspect_ratio_weight: 0.14
+    confirmation_frames: 2
+    position_tolerance_px: 24
+    cooldown_frames: 22
+    cooldown_radius_px: 42
+    candidate_history_size: 20
+    motion_mask_smoothing_kernel: 5
+    refine_enabled: true
+    refine_threshold: 0.40
+    convexity_gate_enabled: true
+    convexity_min_ratio: 0.65
+    hierarchy_filter_enabled: true
+
+  balanced:
+    motion_adaptive: true
+    motion_otsu_bias: 10
+    morph_open_ksize: 5
+    morph_close_ksize: 9
+    motion_min_white_frac: 0.012
+    min_area: 10
+    max_area: 1100
+    min_aspect_ratio: 0.30
+    max_aspect_ratio: 3.0
+    min_solidity: 0.10
+    max_solidity: 0.95
+    min_extent: 0.05
+    max_extent: 0.75
+    min_edge_density: 0.018
+    max_edge_density: 0.36
+    preferred_aspect_ratio: 0.35
+    aspect_ratio_tolerance: 1.6
+    edge_canny_threshold1: 38
+    edge_canny_threshold2: 120
+    circularity_weight: 0.33
+    solidity_weight: 0.20
+    extent_weight: 0.15
+    edge_weight: 0.17
+    aspect_ratio_weight: 0.15
+    confirmation_frames: 3
+    position_tolerance_px: 20
+    cooldown_frames: 28
+    cooldown_radius_px: 48
+    candidate_history_size: 22
+    motion_mask_smoothing_kernel: 5
+    refine_enabled: true
+    refine_threshold: 0.45
+    convexity_gate_enabled: true
+    convexity_min_ratio: 0.70
+    hierarchy_filter_enabled: true
+
+  stable:
+    motion_adaptive: true
+    motion_otsu_bias: 14
+    morph_open_ksize: 7
+    morph_close_ksize: 11
+    motion_min_white_frac: 0.015
+    min_area: 14
+    max_area: 900
+    min_aspect_ratio: 0.34
+    max_aspect_ratio: 2.6
+    min_solidity: 0.12
+    max_solidity: 0.92
+    min_extent: 0.06
+    max_extent: 0.68
+    min_edge_density: 0.022
+    max_edge_density: 0.32
+    preferred_aspect_ratio: 0.35
+    aspect_ratio_tolerance: 1.35
+    edge_canny_threshold1: 50
+    edge_canny_threshold2: 165
+    circularity_weight: 0.35
+    solidity_weight: 0.20
+    extent_weight: 0.15
+    edge_weight: 0.12
+    aspect_ratio_weight: 0.18
+    confirmation_frames: 4
+    position_tolerance_px: 18
+    cooldown_frames: 35
+    cooldown_radius_px: 55
+    candidate_history_size: 24
+    motion_mask_smoothing_kernel: 7
+    refine_enabled: true
+    refine_threshold: 0.50
+    convexity_gate_enabled: true
+    convexity_min_ratio: 0.75
+    hierarchy_filter_enabled: true

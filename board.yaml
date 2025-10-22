@@ -3,9 +3,9 @@
 version: 1
 angles:
   theta0_deg: 90          # 0° reference at 12 o'clock (sector 20 up). Change if your pipeline defines 0° elsewhere.
-  clockwise: true           # true if angles increase clockwise from theta0
+  clockwise: True           # true if angles increase clockwise from theta0
   tolerance_deg: 1.0        # angular tolerance for sector boundary classification
-  center_on_mid: False    # ← Sektor-Mitte auf 12 Uhr (empfohlen)
+  center_on_mid: True    # ← Sektor-Mitte auf 12 Uhr (empfohlen)
 radii:
   # Normalized radii in [0,1] from board center, relative to the outer double ring outer edge.
   # Monotonic increasing: r_bull_inner < r_bull_outer < r_triple_inner < r_triple_outer < r_double_inner < r_double_outer (=1.0)
