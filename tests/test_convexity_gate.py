@@ -22,14 +22,14 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 # Import modules
-from config_schema import (
+from src.vision.config_schema import (
     validate_config_file,
     save_config_atomic,
     create_default_config,
     DetectorConfigFile,
     DartDetectorConfigSchema
 )
-from dart_impact_detector_enhanced import (
+from src.vision.dart_impact_detector import (
     DartImpactDetector,
     DartDetectorConfig,
     apply_detector_preset
@@ -43,7 +43,7 @@ def test_yaml_schema_validation():
     print("=" * 60)
 
     # Test valid config
-    config_path = Path("config/detectors.yaml")
+    config_path = Path("../config/detectors.yaml")
     if not config_path.exists():
         print(f"⚠️  Config not found, creating default: {config_path}")
         create_default_config(config_path)

@@ -8,6 +8,20 @@ motion:
   max_contour_area: 5000
   morph_kernel_size: 3
   event_history_size: 10
+  # NEW: Adaptive Motion-Gating (Proposal 2)
+  adaptive_otsu_enabled: true
+  brightness_dark_threshold: 60.0
+  brightness_bright_threshold: 150.0
+  otsu_bias_dark: -15
+  otsu_bias_normal: 0
+  otsu_bias_bright: 10
+  dual_threshold_enabled: false  # Experimental, default OFF
+  dual_threshold_low_multiplier: 0.6
+  dual_threshold_high_multiplier: 1.4
+  search_mode_enabled: true
+  search_mode_trigger_frames: 90
+  search_mode_threshold_drop: 150
+  search_mode_duration_frames: 30
 
 dart_detector:
   # Shape constraints

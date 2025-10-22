@@ -1,8 +1,18 @@
 """
-Enhanced Motion Detector with Gating Logic
-CPU-efficient motion detection optimized for dart throws.
+Enhanced Motion Detector with Adaptive Gating
+CPU-efficient motion detection with dynamic threshold adaptation.
 
-Performance: Only triggers expensive operations when motion detected
+NEW Features (v1.1.0):
+- Adaptive Otsu-Bias: Dynamic threshold based on frame brightness
+- Multi-Threshold Fusion: Parallel low/high thresholds for better recall
+- Temporal-Gate: Search mode after prolonged stillness
+- Frame brightness analysis for adaptive tuning
+
+Existing Features:
+- MOG2 background subtraction
+- Configurable sensitivity
+- Motion event tracking
+- Gating mechanism for CPU optimization
 """
 
 import cv2
@@ -24,13 +34,15 @@ class MotionEvent:
     intensity: float  # 0.0 - 1.0
     bounding_box: Tuple[int, int, int, int]  # x, y, w, h
     frame_index: int
+    brightness: Optional[float] = None  # NEW: frame brightness (0-255)
+    threshold_used: Optional[int] = None  # NEW: actual threshold applied
 
 
 @dataclass
 class MotionConfig:
-    """Motion detection configuration"""
+    """Enhanced motion detection configuration (Pydantic-compatible)"""
     # Background subtraction
-    var_threshold: int = 50  # MOG2 variance threshold (tune with video_analyzer!)
+    var_threshold: int = 50  # MOG2 variance threshold
     detect_shadows: bool = True
     history: int = 500  # Frames for background model
 
@@ -45,16 +57,35 @@ class MotionConfig:
     # Event history
     event_history_size: int = 10
 
+    # NEW: Adaptive Otsu-Bias (Proposal 2)
+    adaptive_otsu_enabled: bool = True
+    brightness_dark_threshold: float = 60.0  # Below this = dark
+    brightness_bright_threshold: float = 150.0  # Above this = bright
+    otsu_bias_dark: int = -15  # Lower threshold for dark frames
+    otsu_bias_normal: int = 0  # Baseline for normal frames
+    otsu_bias_bright: int = +10  # Higher threshold for bright frames
+
+    # NEW: Multi-Threshold Fusion (Proposal 2)
+    dual_threshold_enabled: bool = False  # Experimental, default OFF
+    dual_threshold_low_multiplier: float = 0.6  # 60% of base threshold
+    dual_threshold_high_multiplier: float = 1.4  # 140% of base threshold
+
+    # NEW: Temporal-Gate (Search Mode) (Proposal 2)
+    search_mode_enabled: bool = True
+    search_mode_trigger_frames: int = 90  # No motion for 3 seconds → search mode
+    search_mode_threshold_drop: int = 150  # Drop threshold by this amount
+    search_mode_duration_frames: int = 30  # Stay in search mode for 1 second
+
 
 class MotionDetector:
     """
-    Motion detector with gating logic for CPU optimization.
+    Enhanced motion detector with adaptive gating logic.
 
     Features:
-    - MOG2 background subtraction
-    - Configurable sensitivity
-    - Motion event tracking
-    - Gating mechanism for expensive operations
+    - Adaptive MOG2 thresholds based on frame brightness
+    - Optional dual-threshold fusion for recall boost
+    - Temporal search mode after prolonged stillness
+    - CPU-efficient gating mechanism
     """
 
     def __init__(self, config: Optional[MotionConfig] = None):
@@ -82,6 +113,112 @@ class MotionDetector:
         self.motion_frames = 0
         self.gated_operations = 0
 
+        # NEW: Adaptive tracking
+        self.brightness_history: deque = deque(maxlen=30)  # Last 30 frames
+        self.search_mode_active = False
+        self.search_mode_end_frame: Optional[int] = None
+
+        # NEW: Stats for adaptive features
+        self.adaptive_stats = {
+            "adaptive_adjustments": 0,
+            "dual_threshold_activations": 0,
+            "search_mode_activations": 0,
+            "dark_frames": 0,
+            "bright_frames": 0,
+            "normal_frames": 0
+        }
+
+    def _compute_frame_brightness(self, frame: np.ndarray) -> float:
+        """Compute average frame brightness (0-255)"""
+        if frame.ndim == 3:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = frame
+        return float(np.mean(gray))
+
+    def _get_adaptive_otsu_bias(self, brightness: float) -> int:
+        """
+        Compute adaptive Otsu bias based on frame brightness.
+        
+        Dark frames (< 60): Lower threshold (more sensitive)
+        Bright frames (> 150): Higher threshold (less sensitive)
+        Normal frames: Baseline threshold
+        """
+        if not self.config.adaptive_otsu_enabled:
+            return 0
+
+        if brightness < self.config.brightness_dark_threshold:
+            self.adaptive_stats["dark_frames"] += 1
+            return self.config.otsu_bias_dark
+        elif brightness > self.config.brightness_bright_threshold:
+            self.adaptive_stats["bright_frames"] += 1
+            return self.config.otsu_bias_bright
+        else:
+            self.adaptive_stats["normal_frames"] += 1
+            return self.config.otsu_bias_normal
+
+    def _apply_dual_threshold(
+            self,
+            fg_mask: np.ndarray,
+            base_threshold: int
+    ) -> np.ndarray:
+        """
+        Apply dual-threshold fusion for better recall.
+        
+        Combines results from low and high thresholds via union.
+        Low threshold catches subtle motion, high threshold reduces noise.
+        """
+        if not self.config.dual_threshold_enabled:
+            return fg_mask
+
+        self.adaptive_stats["dual_threshold_activations"] += 1
+
+        # Compute thresholds
+        low_thresh = int(base_threshold * self.config.dual_threshold_low_multiplier)
+        high_thresh = int(base_threshold * self.config.dual_threshold_high_multiplier)
+
+        # Apply both thresholds
+        _, mask_low = cv2.threshold(fg_mask, low_thresh, 255, cv2.THRESH_BINARY)
+        _, mask_high = cv2.threshold(fg_mask, high_thresh, 255, cv2.THRESH_BINARY)
+
+        # Union (OR operation)
+        fused_mask = cv2.bitwise_or(mask_low, mask_high)
+
+        return fused_mask
+
+    def _check_search_mode(self, frame_index: int) -> bool:
+        """
+        Check if search mode should be activated.
+        
+        Search mode: After N frames of no motion, temporarily lower threshold
+        to actively search for subtle motion (e.g., dart stuck in board).
+        """
+        if not self.config.search_mode_enabled:
+            return False
+
+        # Already in search mode?
+        if self.search_mode_active:
+            if frame_index >= self.search_mode_end_frame:
+                self.search_mode_active = False
+                logger.debug(f"Search mode ended at frame {frame_index}")
+            return self.search_mode_active
+
+        # Check if we should enter search mode
+        if self.last_motion_frame is None:
+            frames_since_motion = frame_index
+        else:
+            frames_since_motion = frame_index - self.last_motion_frame
+
+        if frames_since_motion >= self.config.search_mode_trigger_frames:
+            # Activate search mode
+            self.search_mode_active = True
+            self.search_mode_end_frame = frame_index + self.config.search_mode_duration_frames
+            self.adaptive_stats["search_mode_activations"] += 1
+            logger.debug(f"Search mode activated at frame {frame_index} (no motion for {frames_since_motion} frames)")
+            return True
+
+        return False
+
     def detect_motion(
             self,
             frame: np.ndarray,
@@ -89,7 +226,7 @@ class MotionDetector:
             timestamp: float
     ) -> Tuple[bool, Optional[MotionEvent], np.ndarray]:
         """
-        Detect motion in frame.
+        Detect motion in frame with adaptive thresholding.
 
         Args:
             frame: Input frame (BGR or grayscale)
@@ -101,8 +238,21 @@ class MotionDetector:
         """
         self.frames_processed += 1
 
+        # NEW: Compute frame brightness
+        brightness = self._compute_frame_brightness(frame)
+        self.brightness_history.append(brightness)
+
+        # NEW: Get adaptive Otsu bias
+        otsu_bias = self._get_adaptive_otsu_bias(brightness)
+        if otsu_bias != 0:
+            self.adaptive_stats["adaptive_adjustments"] += 1
+
         # Apply background subtraction
         fg_mask = self.bg_subtractor.apply(frame)
+
+        # NEW: Apply dual threshold fusion if enabled
+        if self.config.dual_threshold_enabled:
+            fg_mask = self._apply_dual_threshold(fg_mask, self.config.var_threshold)
 
         # Clean noise with morphological operations
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.morph_kernel)
@@ -111,15 +261,28 @@ class MotionDetector:
         # Count motion pixels
         motion_pixels = cv2.countNonZero(fg_mask)
 
+        # NEW: Check search mode and adjust threshold if needed
+        in_search_mode = self._check_search_mode(frame_index)
+        effective_threshold = self.config.motion_pixel_threshold
+        if in_search_mode:
+            effective_threshold = max(
+                100,  # Minimum threshold
+                effective_threshold - self.config.search_mode_threshold_drop
+            )
+
         # Check if motion exceeds threshold
-        motion_detected = motion_pixels > self.config.motion_pixel_threshold
+        motion_detected = motion_pixels > effective_threshold
 
         if motion_detected:
             self.motion_frames += 1
             self.last_motion_frame = frame_index
 
             # Find motion event details
-            event = self._extract_motion_event(fg_mask, frame_index, timestamp)
+            event = self._extract_motion_event(
+                fg_mask, frame_index, timestamp,
+                brightness=brightness,
+                threshold_used=effective_threshold
+            )
 
             if event:
                 self.motion_events.append(event)
@@ -132,7 +295,9 @@ class MotionDetector:
             self,
             fg_mask: np.ndarray,
             frame_index: int,
-            timestamp: float
+            timestamp: float,
+            brightness: Optional[float] = None,
+            threshold_used: Optional[int] = None
     ) -> Optional[MotionEvent]:
         """Extract motion event details from foreground mask"""
 
@@ -175,7 +340,9 @@ class MotionDetector:
             area=area,
             intensity=intensity,
             bounding_box=(x, y, w, h),
-            frame_index=frame_index
+            frame_index=frame_index,
+            brightness=brightness,
+            threshold_used=threshold_used
         )
 
     def gate_processing(
@@ -223,15 +390,25 @@ class MotionDetector:
         return frames_since <= max_frames_ago
 
     def get_stats(self) -> dict:
-        """Get motion detection statistics"""
-        return {
+        """Get comprehensive motion detection statistics"""
+        base_stats = {
             'frames_processed': self.frames_processed,
             'motion_frames': self.motion_frames,
             'motion_rate': self.motion_frames / max(self.frames_processed, 1),
             'gated_operations': self.gated_operations,
             'gate_efficiency': 1.0 - (self.gated_operations / max(self.frames_processed, 1)),
-            'recent_motion': self.is_motion_recent()
+            'recent_motion': self.is_motion_recent(),
+            'search_mode_active': self.search_mode_active
         }
+
+        # Add adaptive stats
+        if self.config.adaptive_otsu_enabled or self.config.dual_threshold_enabled or self.config.search_mode_enabled:
+            base_stats.update({
+                'adaptive': self.adaptive_stats.copy(),
+                'avg_brightness': float(np.mean(self.brightness_history)) if self.brightness_history else 0.0
+            })
+
+        return base_stats
 
     def reset(self):
         """Reset detector state"""
@@ -245,4 +422,18 @@ class MotionDetector:
         self.frames_processed = 0
         self.motion_frames = 0
         self.gated_operations = 0
-        logger.info("Motion detector reset")
+
+        # Reset adaptive tracking
+        self.brightness_history.clear()
+        self.search_mode_active = False
+        self.search_mode_end_frame = None
+        self.adaptive_stats = {
+            "adaptive_adjustments": 0,
+            "dual_threshold_activations": 0,
+            "search_mode_activations": 0,
+            "dark_frames": 0,
+            "bright_frames": 0,
+            "normal_frames": 0
+        }
+
+        logger.info("Enhanced motion detector reset")

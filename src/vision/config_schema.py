@@ -35,6 +35,25 @@ class MotionConfigSchema(BaseModel):
     morph_kernel_size: int = Field(default=3, ge=1, le=15, description="Morphology kernel size")
     event_history_size: int = Field(default=10, ge=1, le=100, description="Event history buffer")
     
+    # NEW: Adaptive Otsu-Bias (Proposal 2)
+    adaptive_otsu_enabled: bool = Field(default=True, description="Enable adaptive Otsu bias")
+    brightness_dark_threshold: float = Field(default=60.0, ge=0.0, le=255.0, description="Dark threshold")
+    brightness_bright_threshold: float = Field(default=150.0, ge=0.0, le=255.0, description="Bright threshold")
+    otsu_bias_dark: int = Field(default=-15, ge=-50, le=50, description="Otsu bias for dark frames")
+    otsu_bias_normal: int = Field(default=0, ge=-50, le=50, description="Otsu bias for normal frames")
+    otsu_bias_bright: int = Field(default=10, ge=-50, le=50, description="Otsu bias for bright frames")
+    
+    # NEW: Multi-Threshold Fusion (Proposal 2)
+    dual_threshold_enabled: bool = Field(default=False, description="Enable dual threshold fusion")
+    dual_threshold_low_multiplier: float = Field(default=0.6, ge=0.1, le=1.0, description="Low threshold multiplier")
+    dual_threshold_high_multiplier: float = Field(default=1.4, ge=1.0, le=3.0, description="High threshold multiplier")
+    
+    # NEW: Temporal-Gate (Search Mode) (Proposal 2)
+    search_mode_enabled: bool = Field(default=True, description="Enable temporal search mode")
+    search_mode_trigger_frames: int = Field(default=90, ge=30, le=300, description="Frames before search mode")
+    search_mode_threshold_drop: int = Field(default=150, ge=50, le=400, description="Threshold drop in search mode")
+    search_mode_duration_frames: int = Field(default=30, ge=10, le=120, description="Search mode duration")
+    
     @field_validator('morph_kernel_size')
     @classmethod
     def validate_odd_kernel(cls, v: int) -> int:
