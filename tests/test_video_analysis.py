@@ -21,9 +21,12 @@ def test_mog2_parameters():
 
     # Your test videos
     video_paths = [
-        "test_videos/darts_3Pfeile.mp4",
-        "test_videos/VID-20251008-WA0001.mp4",
-        "test_videos/VID-20251008-WA0003.mp4"
+        "test_videos/videos/1.mp4",
+        "test_videos/videos/7.mp4",
+        "test_videos/videos/a.mp4",
+        "test_videos/videos/d.mp4",
+        "test_videos/videos/h.mp4",
+        "test_videos/videos/r.mp4",
     ]
 
     # Define configs to test

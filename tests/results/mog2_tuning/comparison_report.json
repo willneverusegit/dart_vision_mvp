@@ -1,7 +1,7 @@
 [
   {
     "config_name": "MOG2_var25",
-    "video_name": "darts_3Pfeile.mp4",
+    "video_name": "1.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -9,11 +9,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 5.6799999583745375e-05
+    "processing_time_sec": 2.390000008745119e-05
   },
   {
     "config_name": "MOG2_var50",
-    "video_name": "darts_3Pfeile.mp4",
+    "video_name": "1.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -21,11 +21,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.4599998394260183e-05
+    "processing_time_sec": 8.300001354655251e-06
   },
   {
     "config_name": "MOG2_var75",
-    "video_name": "darts_3Pfeile.mp4",
+    "video_name": "1.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -33,11 +33,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.7500000467407517e-05
+    "processing_time_sec": 1.7400001524947584e-05
   },
   {
     "config_name": "MOG2_var99",
-    "video_name": "darts_3Pfeile.mp4",
+    "video_name": "1.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -45,11 +45,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.7300000763498247e-05
+    "processing_time_sec": 1.469999915570952e-05
   },
   {
     "config_name": "MOG2_var25",
-    "video_name": "VID-20251008-WA0001.mp4",
+    "video_name": "7.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -57,11 +57,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.6900001355679706e-05
+    "processing_time_sec": 1.5100002201506868e-05
   },
   {
     "config_name": "MOG2_var50",
-    "video_name": "VID-20251008-WA0001.mp4",
+    "video_name": "7.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -69,11 +69,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.0199999451288022e-05
+    "processing_time_sec": 1.1500000255182385e-05
   },
   {
     "config_name": "MOG2_var75",
-    "video_name": "VID-20251008-WA0001.mp4",
+    "video_name": "7.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -81,11 +81,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.3800001397612505e-05
+    "processing_time_sec": 1.0300002031726763e-05
   },
   {
     "config_name": "MOG2_var99",
-    "video_name": "VID-20251008-WA0001.mp4",
+    "video_name": "7.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -93,11 +93,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.8000000636675395e-05
+    "processing_time_sec": 1.3799999578623101e-05
   },
   {
     "config_name": "MOG2_var25",
-    "video_name": "VID-20251008-WA0003.mp4",
+    "video_name": "a.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -105,11 +105,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.6199999663513154e-05
+    "processing_time_sec": 1.0299998393747956e-05
   },
   {
     "config_name": "MOG2_var50",
-    "video_name": "VID-20251008-WA0003.mp4",
+    "video_name": "a.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -117,11 +117,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.4300001566880383e-05
+    "processing_time_sec": 9.999999747378752e-06
   },
   {
     "config_name": "MOG2_var75",
-    "video_name": "VID-20251008-WA0003.mp4",
+    "video_name": "a.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -129,11 +129,11 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.1000000085914508e-05
+    "processing_time_sec": 2.9200000426499173e-05
   },
   {
     "config_name": "MOG2_var99",
-    "video_name": "VID-20251008-WA0003.mp4",
+    "video_name": "a.mp4",
     "fps_median": 0,
     "fps_p95": 0,
     "frame_time_ms": 0,
@@ -141,6 +141,150 @@
     "detections_count": 0,
     "false_positives": 0,
     "false_negatives": 0,
-    "processing_time_sec": 1.0700001439545304e-05
+    "processing_time_sec": 9.69999746303074e-06
+  },
+  {
+    "config_name": "MOG2_var25",
+    "video_name": "d.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 6.70000008540228e-06
+  },
+  {
+    "config_name": "MOG2_var50",
+    "video_name": "d.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 7.200000254670158e-06
+  },
+  {
+    "config_name": "MOG2_var75",
+    "video_name": "d.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 3.429999924264848e-05
+  },
+  {
+    "config_name": "MOG2_var99",
+    "video_name": "d.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 9.400002454640344e-06
+  },
+  {
+    "config_name": "MOG2_var25",
+    "video_name": "h.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 8.000002708286047e-06
+  },
+  {
+    "config_name": "MOG2_var50",
+    "video_name": "h.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 1.1200001608813182e-05
+  },
+  {
+    "config_name": "MOG2_var75",
+    "video_name": "h.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 7.599999662488699e-06
+  },
+  {
+    "config_name": "MOG2_var99",
+    "video_name": "h.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 1.3900000340072438e-05
+  },
+  {
+    "config_name": "MOG2_var25",
+    "video_name": "r.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 9.2999980552122e-06
+  },
+  {
+    "config_name": "MOG2_var50",
+    "video_name": "r.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 1.2600001355167478e-05
+  },
+  {
+    "config_name": "MOG2_var75",
+    "video_name": "r.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 6.70000008540228e-06
+  },
+  {
+    "config_name": "MOG2_var99",
+    "video_name": "r.mp4",
+    "fps_median": 0,
+    "fps_p95": 0,
+    "frame_time_ms": 0,
+    "frames_processed": 0,
+    "detections_count": 0,
+    "false_positives": 0,
+    "false_negatives": 0,
+    "processing_time_sec": 9.499999578110874e-06
   }
 ]
