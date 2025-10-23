@@ -313,7 +313,14 @@ class DartVisionHotkeys:
         self.handler.register(
             ord('c'),
             lambda: self.app._recalibrate_and_apply(),
-            "Recalibrate",
+            "Recalibrate ROI",
+            HotkeyCategory.CALIBRATION
+        )
+
+        self.handler.register(
+            ord('C'),
+            self._toggle_board_calibration,
+            "Toggle board overlay calibration (colored dartboard)",
             HotkeyCategory.CALIBRATION
         )
 
@@ -378,6 +385,21 @@ class DartVisionHotkeys:
         """Toggle auto-alignment mode."""
         self.app.align_auto = not self.app.align_auto
         logger.info(f"[ALIGN] auto={'ON' if self.app.align_auto else 'OFF'} (mode must be ALIGN to run)")
+
+    def _toggle_board_calibration(self):
+        """Toggle board overlay calibration mode (colored dartboard)."""
+        from src.ui.overlay_renderer import OVERLAY_FULL
+        self.app.board_calibration_mode = not self.app.board_calibration_mode
+
+        # Auto-switch to FULL mode when enabling calibration
+        if self.app.board_calibration_mode and self.app.overlay_mode != OVERLAY_FULL:
+            self.app.overlay_mode = OVERLAY_FULL
+            logger.info("[OVERLAY] Switched to FULL mode for board calibration")
+
+        status = "ON" if self.app.board_calibration_mode else "OFF"
+        logger.info(f"[BOARD CAL] Colored dartboard overlay: {status}")
+        if self.app.board_calibration_mode:
+            logger.info("[BOARD CAL] Use arrow keys to adjust rotation/scale, j/k/l/i for center, X to save")
 
     # ========== MOTION TUNING ==========
     def _setup_motion_tuning_hotkeys(self):
