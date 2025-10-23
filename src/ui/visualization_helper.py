@@ -56,6 +56,9 @@ def create_visualization_refactored(
     align_auto: bool = False,
     unified_calibration: Optional[object] = None,
 
+    # System state
+    paused: bool = False,
+
     # CLAHE flag
     use_clahe: bool = False
 ) -> np.ndarray:
@@ -145,6 +148,6 @@ def create_visualization_refactored(
         hud_renderer.draw_help_overlay(disp_roi)
 
     # ===== COMPOSE CANVAS =====
-    canvas = overlay_renderer.compose_canvas(disp_main, disp_roi, paused=False)
+    canvas = overlay_renderer.compose_canvas(disp_main, disp_roi, paused=paused)
 
     return canvas

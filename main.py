@@ -1352,208 +1352,59 @@ class DartVisionApp:
         )
 
     def create_visualization(self, frame, roi_frame, motion_detected, fg_mask, impact):
-        disp_main = cv2.resize(frame, (800, 600))
-        disp_roi = cv2.resize(roi_frame, ROI_SIZE)
+        """
+        Create visualization using modular renderers.
+        
+        Delegates to visualization_helper for clean, maintainable rendering.
+        """
+        from src.ui.visualization_helper import create_visualization_refactored
+        
+        return create_visualization_refactored(
+            # Renderers
+            hud_renderer=self.hud_renderer,
+            overlay_renderer=self.overlay_renderer,
+            
+            # Input frames
+            frame=frame,
+            roi_frame=roi_frame,
+            motion_detected=motion_detected,
+            fg_mask=fg_mask,
+            
+            # State
+            overlay_mode=self.overlay_mode,
+            show_debug=self.show_debug,
+            show_motion=self.show_motion,
+            show_mask=self.show_mask,
+            show_help=self.show_help,
+            annulus_mask=self._roi_annulus_mask,
+            
+            # Components
+            dart_detector=self.dart,
+            board_mapper=self.board_mapper,
+            board_cfg=self.board_cfg,
+            calibration=self._overlay_calib(),
+            game=self.game,
+            
+            # Optional components
+            heatmap_accumulator=self.hm,
+            polar_heatmap=self.ph,
+            heatmap_enabled=self.heatmap_enabled,
+            polar_enabled=self.polar_enabled,
+            
+            # HUD data
+            fps_counter=self.fps,
+            total_darts=self.total_darts,
+            last_msg=self.last_msg,
+            current_preset=self.current_preset,
+            align_auto=self.align_auto,
+            unified_calibration=self.uc,
 
-        # HUD im Laufbetrieb (nur Anzeige)
+            # System state
+            paused=self.paused,
 
-        if self.overlay_mode == OVERLAY_FULL:
-            gray_main = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if getattr(self.args, "clahe", False):
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                gray_main = clahe.apply(gray_main)
-            b_mean, f_var, e_pct = self._hud_compute(gray_main)
-            hud_col = self._hud_color(b_mean, f_var, e_pct)
-            cv2.putText(disp_main, f"B:{b_mean:.0f} F:{int(f_var)} E:{e_pct:.1f}%", (10, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, hud_col, 2, cv2.LINE_AA)
-            self._draw_traffic_light(disp_main, b_mean, f_var, e_pct, org=(10, 50))
-
-        # Motion overlay
-        if self.show_motion and motion_detected:
-            fg_color = cv2.cvtColor(fg_mask, cv2.COLOR_GRAY2BGR)
-            fg_color = cv2.resize(fg_color, ROI_SIZE)
-            disp_roi = cv2.addWeighted(disp_roi, 0.9, fg_color, 0.6, 0.3)
-
-        if self.show_mask and self._roi_annulus_mask is not None:
-            disp_roi = cv2.addWeighted(
-                disp_roi, 1.0,
-                cv2.cvtColor(self._roi_annulus_mask, cv2.COLOR_GRAY2BGR),
-                0.25, 0.0
-            )
-
-        if getattr(self, "show_debug", False) and self.dart is not None:
-            cfg = self.dart.config
-            cv2.putText(
-                disp_roi,
-                f"MotionTune  bias:{int(getattr(cfg, 'motion_otsu_bias', 0)):+d}  "
-                f"open:{int(getattr(cfg, 'morph_open_ksize', 3))}  "
-                f"close:{int(getattr(cfg, 'morph_close_ksize', 5))}  "
-                f"minWhite:{getattr(cfg, 'motion_min_white_frac', 0.02) * 100:.1f}%",
-                (10, ROI_SIZE[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA
-            )
-
-        # Board rings (ROI)
-        # ROI-Overlays nach Modus
-        if self.homography is not None or self.homography_eff is not None:
-            # 1) Motion zuerst (falls aktiv)
-            # (Hast du schon oben gemacht – gut so)
-
-            # 2) Einfache Referenzringe im RINGS/FULL Modus
-            if self.overlay_mode >= OVERLAY_RINGS:
-                cal = self._overlay_calib()
-                cx = int(round(cal.cx))
-                cy = int(round(cal.cy))
-                r_base = int(round(cal.r_outer_double_px))  # absoluter Doppelaußenradius
-                # äußerer Doppelring (grün)
-                cv2.circle(disp_roi, (cx, cy), max(1, r_base), (0, 255, 0), 2, cv2.LINE_AA)
-
-
-            # 3) Präzises Mapping nur im FULL-Modus
-            if self.overlay_mode == OVERLAY_FULL and self.board_mapper is not None:
-                disp_roi[:] = draw_ring_circles(disp_roi, self.board_mapper)
-                disp_roi[:] = draw_sector_labels(disp_roi, self.board_mapper)
-                cal = self.board_mapper.calib
-                cv2.putText(disp_roi,
-                            f"cx:{cal.cx:.1f} cy:{cal.cy:.1f}",
-                            (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 220, 220), 1, cv2.LINE_AA)
-            # --- ALIGN-Modus: dicke Doppel-/Triple-Kreise + optional Auto-Hough ---
-            if self.overlay_mode == OVERLAY_ALIGN:
-                # --- Heatmap overlay (ROI panel) ---
-                if self.hm is not None and self.heatmap_enabled:
-                    disp_roi = self.hm.render_overlay(disp_roi, roi_mask=None)
-                # --- Polar mini-panel (top-left of ROI) -
-                if self.ph is not None and self.polar_enabled:
-                    disp_roi = self.ph.overlay_panel(disp_roi, pos=(10, 110))
-                if self.board_cfg is None:
-                    cv2.putText(disp_roi, "ALIGN (no board cfg)", (ROI_SIZE[0] - 240, 24),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2, cv2.LINE_AA)
-                    # Zur Not nur den ROI-Kreis zeichnen:
-                    r = int(self.roi_board_radius * self.overlay_scale)
-                    cv2.circle(disp_roi, (ROI_CENTER[0], ROI_CENTER[1]), r, (0, 255, 0), 2, cv2.LINE_AA)
-                # Guideline-Kreise auf ROI
-                cal = self._overlay_calib()
-                cx = int(round(cal.cx))
-                cy = int(round(cal.cy))
-                r_base = int(round(cal.r_outer_double_px))
-
-                r_double_outer = int(r_base)
-                r_double_inner = int(round(r_base * self.board_cfg.radii.r_double_inner))
-                r_triple_outer = int(round(r_base * self.board_cfg.radii.r_triple_outer))
-                r_triple_inner = int(round(r_base * self.board_cfg.radii.r_triple_inner))
-                r_outer_bull = int(round(r_base * self.board_cfg.radii.r_bull_outer))
-                r_inner_bull = int(round(r_base * self.board_cfg.radii.r_bull_inner))
-
-                # dicke Linien für Ausrichtung
-                for rr, col, th in (
-                        (r_double_outer, (0, 255, 0), 1.5),
-                        (r_double_inner, (0, 255, 0), 1),
-                        (r_triple_outer, (0, 200, 255), 0.75),
-                        (r_triple_inner, (0, 200, 255), 0.75),
-                        (r_outer_bull, (255, 200, 0), 0.5),
-                        (r_inner_bull, (255, 200, 0), 0.25),
-                ):
-                    cv2.circle(disp_roi, (int(cx), int(cy)), int(max(rr, 1)), col, int(th), cv2.LINE_AA)
-
-
-                # HUD rechts oben
-                cv2.putText(disp_roi, "ALIGN", (ROI_SIZE[0] - 180, 24),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-                cv2.putText(disp_roi, f"auto:{'ON' if self.align_auto else 'OFF'}",
-                            (ROI_SIZE[0] - 180, 46), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-                cv2.putText(disp_roi, f"cx:{cx} cy:{cy} rpx:{r_base}",
-                            (ROI_SIZE[0] - 180, 68), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1, cv2.LINE_AA)
-                cv2.putText(disp_roi, "Keys: t=Hough once, z=Auto Hough",
-                            (ROI_SIZE[0] - 290, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-
-        # --- Ein zentraler Overlay/HUD-Block oben rechts (kein Duplikat) ---
-        modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL", OVERLAY_ALIGN:  "ALIGN "}
-        cv2.putText(disp_roi, f"Overlay: {modes[self.overlay_mode]}",
-                    (ROI_SIZE[0] - 180, 24),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
-
-        # Zeige rot/scale nur, wenn BoardMapper aktiv ist
-        if self.board_mapper is not None:
-            cal = self.board_mapper.calib
-            if self.uc is not None:
-                scale = float(cal.r_outer_double_px) / float(self.uc.metrics.roi_board_radius)
-            else:
-                scale = float(self.overlay_scale)  # Fallback
-            cv2.putText(disp_roi, f"rot:{cal.rotation_deg:.1f}  scale:{scale:.3f}",
-                        (ROI_SIZE[0] - 180, 46),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-           ## ROI Fine-tuning Status
-           #cv2.putText(
-           #    disp_roi,
-           #    f"ROI SRT  r:{self.roi_rot_deg:+.2f}°  s:{self.roi_scale:.4f}  tx:{self.roi_tx:+.1f} ty:{self.roi_ty:+.1f}",
-           #    (ROI_SIZE[0] - 330, 86),
-           #    cv2.FONT_HERSHEY_SIMPLEX,
-           #    0.5,
-           #    (220, 220, 220),
-           #    1,
-           #    cv2.LINE_AA
-           #)
-        # Optional: zuletzt empfangenen Extended-Keycode (falls gesetzt)
-        if getattr(self, "last_key_dbg", "") and self.overlay_mode == OVERLAY_FULL:
-            cv2.putText(disp_roi, f"key:{self.last_key_dbg}",
-                        (ROI_SIZE[0] - 180, 68),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
-
-        # Impact markers
-        # Impact markers (ROI-Panel)
-        for imp in self.dart.get_confirmed_impacts():
-            # refined (gelb):
-            px, py = int(imp.position[0]), int(imp.position[1])
-            cv2.circle(disp_roi, (px, py), 2, (0, 255, 255), 2, cv2.LINE_AA)
-            cv2.circle(disp_roi, (px, py), 1, (0, 255, 255), -1, cv2.LINE_AA)
-
-            # optional: raw als kleine weiße Markierung – hilft beim Debuggen der Verschiebung
-            if getattr(imp, "raw_position", None):
-                rx, ry = int(imp.raw_position[0]), int(imp.raw_position[1])
-                cv2.circle(disp_roi, (rx, ry), 2, (255, 255, 255), -1, cv2.LINE_AA)
-
-            # Label
-            if getattr(imp, "score_label", None):
-                cv2.putText(disp_roi, imp.score_label, (px + 10, py - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-
-        # Game-HUD unten links im ROI
-        y0 = ROI_SIZE[1] - 60
-        mode_txt = "ATC" if self.game.mode == GameMode.ATC else "301"
-        cv2.putText(disp_roi, f"Game: {mode_txt}", (10, y0),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-        y0 += 28
-        if self.game.mode == GameMode.ATC:
-            status_txt = "FINISH" if self.game.done else f"Target: {self.game.target}"
-        else:
-            status_txt = "FINISH" if self.game.done else f"Score: {self.game.score}"
-        cv2.putText(disp_roi, status_txt, (10, y0),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2, cv2.LINE_AA)
-
-
-        # Letzter Wurf (rechts unten)
-        if self.last_msg:
-            cv2.putText(disp_roi, self.last_msg, (10, ROI_SIZE[1] - 5),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 220), 2, cv2.LINE_AA)
-
-
-        # Debug HUD
-        if self.show_debug and self.fps is not None:
-            stats = self.fps.get_stats()
-            cv2.putText(disp_roi, f"FPS: {stats.fps_median:.1f}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
-            cv2.putText(disp_roi, f"Time: {stats.frame_time_ms:.1f}ms", (10,60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-            cv2.putText(disp_roi, f"Darts: {self.total_darts}", (10,90), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
-
-        if not self.show_help:
-            cv2.putText(disp_roi, f"Preset: {getattr(self, 'current_preset', 'balanced')}",
-                        (ROI_SIZE[0] - 180, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2, cv2.LINE_AA)
-        if getattr(self, "show_help", False):
-            self._draw_help_overlay(disp_roi)
-
-        canvas = np.zeros((600, 1200, 3), dtype=np.uint8)
-        canvas[0:600, 0:800] = disp_main
-        canvas[(600-ROI_SIZE[1])//2:(600-ROI_SIZE[1])//2+ROI_SIZE[1], 800:800+ROI_SIZE[0]] = disp_roi
-        return canvas
+            # CLAHE flag
+            use_clahe=getattr(self.args, "clahe", False)
+        )
 
     # ----- Run loop -----
     def run(self):
@@ -1588,9 +1439,6 @@ class DartVisionApp:
                     impact = None
 
                 disp = self.create_visualization(frame, roi_frame, motion, fg_mask, impact)
-
-                if self.paused:
-                    cv2.putText(disp, "PAUSED", (500, 50), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,165,255), 3)
 
                 # Store for hotkey callbacks
                 self._last_disp = disp
