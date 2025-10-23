@@ -126,16 +126,18 @@ def create_visualization_refactored(
     if show_debug and dart_detector is not None:
         dart_config = dart_detector.config
 
-    # ===== GAME & DEBUG CARDS =====
-    disp_roi = overlay_renderer.render_info_cards(
-        disp_roi,
-        game,
-        last_msg,
+    sidebar_selection = overlay_renderer.prepare_sidebar_cards(
+        overlay_mode=overlay_mode,
+        paused=paused,
+        show_motion=show_motion,
         show_debug=show_debug,
+        game=game,
+        last_msg=last_msg,
         fps_stats=fps_stats,
         total_darts=total_darts,
         dart_config=dart_config,
         current_preset=current_preset,
+        motion_detected=motion_detected,
     )
 
     # ===== OVERLAY STATUS =====
@@ -155,7 +157,17 @@ def create_visualization_refactored(
     # ===== COMPOSE CANVAS =====
     canvas = overlay_renderer.compose_canvas(disp_main, disp_roi, paused=paused)
 
-    if overlay_mode == OVERLAY_FULL and hud_metrics is not None:
-        canvas = overlay_renderer.draw_metric_sidebar(canvas, hud_metrics)
+    should_draw_sidebar = (
+        hud_metrics is not None
+        or bool(sidebar_selection.cards)
+        or bool(sidebar_selection.mode_chips)
+    )
+    if should_draw_sidebar:
+        canvas = overlay_renderer.draw_metric_sidebar(
+            canvas,
+            hud_metrics=hud_metrics,
+            cards=sidebar_selection.cards,
+            mode_chips=sidebar_selection.mode_chips,
+        )
 
     return canvas

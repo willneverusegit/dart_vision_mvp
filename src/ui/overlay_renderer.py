@@ -15,7 +15,15 @@ from typing import Optional, Tuple, List, TYPE_CHECKING
 from pathlib import Path
 
 from .typography import Typography, ChipDrawer, CardDrawer
-from .hud_metrics import build_metric_chips, summarise_quality
+from .hud_metrics import (
+    MetricChip,
+    build_metric_chips,
+    summarise_quality,
+    CardManager,
+    HudCardData,
+    HudCardPayload,
+    HudSidebarSelection,
+)
 
 if TYPE_CHECKING:
     from src.board import BoardMapper, BoardConfig, Calibration
@@ -103,6 +111,7 @@ class OverlayRenderer:
         self._typography = Typography()
         self._chip_drawer = ChipDrawer(self._typography)
         self._card_drawer = CardDrawer(self._typography)
+        self.card_manager = CardManager(full_mode_values=(OVERLAY_FULL,))
 
     def _build_canvas_background(self) -> np.ndarray:
         """Precompute the gradient canvas with glass panels."""
@@ -197,73 +206,105 @@ class OverlayRenderer:
         self,
         canvas: np.ndarray,
         hud_metrics: Optional[Tuple[float, float, float]] = None,
+        cards: Optional[List[HudCardPayload]] = None,
+        mode_chips: Optional[List[MetricChip]] = None,
     ) -> np.ndarray:
-        """Draw compact metric chips in the dedicated sidebar area."""
+        """Draw sidebar content (metrics + mode tabs + cards)."""
 
-        if hud_metrics is None or self.sidebar_width <= 0:
+        if self.sidebar_width <= 0:
             return canvas
 
         if self._sidebar_panel_tl is not None:
             x = self._sidebar_panel_tl[0] + 4
             y = self._sidebar_panel_tl[1] + 4
+            right_limit = (self._sidebar_panel_br[0] - 4) if self._sidebar_panel_br else self.sidebar_width - 4
         else:
             x = 12
             y = 18
-
-        b_mean, f_var, e_pct = hud_metrics
-        metric_chips = build_metric_chips(b_mean, f_var, e_pct)
-        if not metric_chips:
-            return canvas
+            right_limit = self.sidebar_width - 12
 
         max_y = self.canvas_size[1] - 18
         chip_gap = 10
 
-        for chip in metric_chips:
-            _, height = self._chip_drawer.draw_metric_chip(
-                canvas,
-                origin=(x, y),
-                label=chip.label,
-                value=chip.value,
-                status=chip.status,
-                subtitle=chip.subtitle,
-                compact=True,
-            )
-            y += height + chip_gap
-            if y >= max_y:
-                break
+        metric_chips: List[MetricChip] = []
+        if hud_metrics is not None:
+            b_mean, f_var, e_pct = hud_metrics
+            metric_chips = build_metric_chips(b_mean, f_var, e_pct)
 
-        overall_status = summarise_quality(metric_chips)
-        _, summary_height = self._chip_drawer.draw_compact_chip(
-            canvas,
-            origin=(x, y),
-            text=f"Quality {overall_status.upper()}",
-            status=overall_status,
-        )
-        y += summary_height + 12
-
-        if y < max_y:
-            radius = 7
-            spacing = radius * 2 + 8
-            indicator_x = x + radius + 4
-            indicator_y = y + radius
-            labels = ["B", "F", "E"]
-            for idx, chip in enumerate(metric_chips[:3]):
-                palette = self._chip_drawer.get_palette(chip.status)
-                color = palette.get("indicator", palette["fill"])
-                cv2.circle(canvas, (indicator_x, indicator_y), radius, color, -1, cv2.LINE_AA)
-                cv2.circle(canvas, (indicator_x, indicator_y), radius, palette["border"], 1, cv2.LINE_AA)
-                letter = labels[idx]
-                text_w, text_h, text_base = self._typography.measure(letter, 16)
-                text_x = int(indicator_x - text_w / 2)
-                text_y = int(indicator_y + (text_h - text_base) / 2)
-                self._typography.draw(
+        if metric_chips:
+            for chip in metric_chips:
+                _, height = self._chip_drawer.draw_metric_chip(
                     canvas,
-                    letter,
-                    (text_x, text_y),
-                    16,
-                    palette["text_primary"],
+                    origin=(x, y),
+                    label=chip.label,
+                    value=chip.value,
+                    status=chip.status,
+                    subtitle=chip.subtitle,
+                    compact=True,
                 )
-                indicator_x += spacing
+                y += height + chip_gap
+                if y >= max_y:
+                    break
+
+            if y < max_y:
+                overall_status = summarise_quality(metric_chips)
+                _, summary_height = self._chip_drawer.draw_compact_chip(
+                    canvas,
+                    origin=(x, y),
+                    text=f"Quality {overall_status.upper()}",
+                    status=overall_status,
+                )
+                y += summary_height + 12
+
+            if y < max_y:
+                radius = 7
+                spacing = radius * 2 + 8
+                indicator_x = x + radius + 4
+                indicator_y = y + radius
+                labels = ["B", "F", "E"]
+                for idx, chip in enumerate(metric_chips[:3]):
+                    palette = self._chip_drawer.get_palette(chip.status)
+                    color = palette.get("indicator", palette["fill"])
+                    cv2.circle(canvas, (indicator_x, indicator_y), radius, color, -1, cv2.LINE_AA)
+                    cv2.circle(canvas, (indicator_x, indicator_y), radius, palette["border"], 1, cv2.LINE_AA)
+                    letter = labels[idx]
+                    text_w, text_h, text_base = self._typography.measure(letter, 16)
+                    text_x = int(indicator_x - text_w / 2)
+                    text_y = int(indicator_y + (text_h - text_base) / 2)
+                    self._typography.draw(
+                        canvas,
+                        letter,
+                        (text_x, text_y),
+                        16,
+                        palette["text_primary"],
+                    )
+                    indicator_x += spacing
+                y += radius * 2 + chip_gap
+
+        if mode_chips:
+            for chip in mode_chips:
+                _, height = self._chip_drawer.draw_metric_chip(
+                    canvas,
+                    origin=(x, y),
+                    label=chip.label,
+                    value=chip.value,
+                    status=chip.status,
+                    subtitle=chip.subtitle,
+                    compact=True,
+                )
+                y += height + chip_gap
+                if y >= max_y:
+                    break
+
+        if cards:
+            card_gap = 18
+            card_width = max(int(right_limit - x), 120)
+            for card in cards:
+                layout = self._card_drawer.prepare_card(card_width, card.title, card.rows, footer=card.footer)
+                _, card_height = self._card_drawer.draw_card(canvas, (x, y), layout, status=card.status)
+                y += card_height + card_gap
+                if y >= max_y:
+                    break
 
         return canvas
 
@@ -451,193 +492,43 @@ class OverlayRenderer:
 
         return img
 
-    def render_info_cards(
+    def prepare_sidebar_cards(
         self,
-        img: np.ndarray,
-        game: 'DemoGame',
+        overlay_mode: int,
+        paused: bool,
+        show_motion: bool,
+        show_debug: bool,
+        game: Optional['DemoGame'],
         last_msg: str = "",
-        show_debug: bool = False,
         fps_stats: Optional[dict] = None,
         total_darts: int = 0,
         dart_config: Optional[object] = None,
         current_preset: str = "balanced",
-    ) -> np.ndarray:
-        """Render stacked cards summarising game and system state."""
+        motion_detected: bool = False,
+    ) -> HudSidebarSelection:
+        """Resolve sidebar cards for the current frame."""
 
-        from src.game.game import GameMode
-
-        if self.roi_size[0] <= 0 or self.roi_size[1] <= 0:
-            return img
-
-        pad = 20
-        gap = 16
-        bottom_margin = 18
-        available_width = self.roi_size[0] - pad * 2
-        if available_width <= 0:
-            return img
-
-        draw_debug = bool(show_debug)
-        if draw_debug:
-            paired_width = available_width - gap
-            if paired_width <= 0:
-                draw_debug = False
-                game_width = max(available_width, 120)
-            else:
-                shared_width = max(int(paired_width // 2), 120)
-                game_width = shared_width
-        else:
-            game_width = max(available_width, 120)
-
-        mode_display = "Around the Clock" if game.mode == GameMode.ATC else "301"
-        game_rows: List[dict] = [
-            {"label": "Mode", "value": mode_display, "status": "accent"}
-        ]
-
-        if game.mode == GameMode.ATC:
-            target = getattr(game, "target", None)
-            if getattr(game, "done", False):
-                objective_value = "Finished run"
-                objective_status = "good"
-            else:
-                objective_value = f"Next: {target}" if target is not None else "Next: --"
-                objective_status = "accent"
-        else:
-            score = getattr(game, "score", None)
-            if getattr(game, "done", False):
-                objective_value = "Checkout"
-                objective_status = "good"
-            else:
-                objective_value = f"{score} left" if score is not None else "--"
-                if score is not None and score <= 100:
-                    objective_status = "warn"
-                else:
-                    objective_status = "accent"
-
-        game_rows.append(
-            {
-                "label": "Objective",
-                "value": objective_value,
-                "status": objective_status,
-            }
+        hud_data = HudCardData(
+            game=game,
+            last_msg=last_msg,
+            fps_stats=fps_stats,
+            total_darts=total_darts,
+            dart_config=dart_config,
+            current_preset=current_preset,
+            motion_enabled=show_motion,
+            motion_detected=motion_detected,
+            debug_enabled=show_debug,
         )
 
-        last_label = ""
-        last_points = 0
-        if hasattr(game, "last") and game.last is not None:
-            last_label = getattr(game.last, "label", "") or ""
-            last_points = int(getattr(game.last, "points", 0) or 0)
-
-        if last_label:
-            last_value = f"{last_label} ({last_points})" if last_points else last_label
-        else:
-            last_value = "Waiting for hit"
-
-        last_hint: Optional[str] = None
-        if last_points and last_label:
-            last_hint = f"{last_points} pts"
-        elif not draw_debug and total_darts:
-            last_hint = f"{total_darts} impacts tracked"
-
-        game_rows.append(
-            {
-                "label": "Last hit",
-                "value": last_value,
-                "status": "info",
-                "hint": last_hint,
-            }
+        selection = self.card_manager.for_state(
+            game_running=not paused,
+            motion_enabled=show_motion,
+            debug_enabled=show_debug,
+            overlay_mode=overlay_mode,
+            hud_data=hud_data,
         )
 
-        footer_text = last_msg if last_msg else "Goal: reliable hit detection & scoring."
-        game_card = self._card_drawer.prepare_card(game_width, "Game State", game_rows, footer=footer_text)
-
-        base_line = self.roi_size[1] - bottom_margin
-        game_y = max(int(base_line - game_card["height"]), 0)
-        self._card_drawer.draw_card(img, (pad, game_y), game_card, status="accent")
-
-        if not draw_debug:
-            return img
-
-        fps_value = None
-        frame_time = None
-        if fps_stats is not None:
-            fps_value = fps_stats.get("fps_median")
-            frame_time = fps_stats.get("frame_time_ms")
-
-        fps_status = "info"
-        fps_progress: Optional[float] = None
-        if isinstance(fps_value, (int, float)):
-            fps_value = float(fps_value)
-            fps_progress = max(0.0, min(1.0, fps_value / 30.0))
-            if fps_value >= 28.0:
-                fps_status = "good"
-            elif fps_value >= 22.0:
-                fps_status = "warn"
-            else:
-                fps_status = "bad"
-
-        frame_status = "info"
-        if isinstance(frame_time, (int, float)):
-            frame_time = float(frame_time)
-            if frame_time <= 35.0:
-                frame_status = "good"
-            elif frame_time <= 45.0:
-                frame_status = "warn"
-            else:
-                frame_status = "bad"
-
-        debug_rows: List[dict] = [
-            {
-                "label": "Median FPS",
-                "value": f"{fps_value:.1f}" if isinstance(fps_value, float) else "--",
-                "status": fps_status,
-                "progress": fps_progress,
-                "hint": "≥30 keeps hits stable" if fps_progress is not None else None,
-            },
-            {
-                "label": "Frame time",
-                "value": f"{frame_time:.1f} ms" if isinstance(frame_time, float) else "--",
-                "status": frame_status,
-            },
-            {
-                "label": "Impacts logged",
-                "value": str(int(total_darts)),
-                "status": "info",
-                "hint": "Session total" if total_darts else None,
-            },
-        ]
-
-        if dart_config is not None:
-            motion_parts: List[str] = []
-            bias = getattr(dart_config, "motion_otsu_bias", None)
-            if isinstance(bias, (int, float)):
-                motion_parts.append(f"bias {int(round(bias)):+d}")
-            open_k = getattr(dart_config, "morph_open_ksize", None)
-            if isinstance(open_k, (int, float)):
-                motion_parts.append(f"open {int(round(open_k))}")
-            close_k = getattr(dart_config, "morph_close_ksize", None)
-            if isinstance(close_k, (int, float)):
-                motion_parts.append(f"close {int(round(close_k))}")
-            min_white = getattr(dart_config, "motion_min_white_frac", None)
-            if isinstance(min_white, (int, float)):
-                motion_parts.append(f"white {min_white * 100:.0f}%")
-            motion_summary = " | ".join(motion_parts) if motion_parts else "default"
-            debug_rows.append(
-                {
-                    "label": "Motion tuning",
-                    "value": motion_summary,
-                    "status": "info",
-                }
-            )
-
-        preset_display = current_preset.replace("_", " ").title()
-        debug_footer = f"Preset: {preset_display}"
-
-        debug_card = self._card_drawer.prepare_card(game_width, "System Health", debug_rows, footer=debug_footer)
-        debug_y = max(int(base_line - debug_card["height"]), 0)
-        debug_x = pad + game_width + gap
-        self._card_drawer.draw_card(img, (debug_x, debug_y), debug_card, status=fps_status)
-
-        return img
+        return selection
 
     def render_overlay_status(
         self,
