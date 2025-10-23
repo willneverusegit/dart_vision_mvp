@@ -81,8 +81,6 @@ def create_visualization_refactored(
     disp_main = overlay_renderer.render_main_panel(
         frame,
         overlay_mode,
-        hud_metrics,
-        draw_traffic_light_fn=hud_renderer.draw_traffic_light if overlay_mode == OVERLAY_FULL else None
     )
 
     # ===== ROI PANEL BASE =====
@@ -156,5 +154,8 @@ def create_visualization_refactored(
 
     # ===== COMPOSE CANVAS =====
     canvas = overlay_renderer.compose_canvas(disp_main, disp_roi, paused=paused)
+
+    if overlay_mode == OVERLAY_FULL and hud_metrics is not None:
+        canvas = overlay_renderer.draw_metric_sidebar(canvas, hud_metrics)
 
     return canvas

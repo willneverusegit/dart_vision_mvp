@@ -39,7 +39,8 @@ class OverlayRenderer:
         self,
         roi_size: Tuple[int, int] = (400, 400),
         main_size: Tuple[int, int] = (800, 600),
-        canvas_size: Tuple[int, int] = (1200, 600)
+        canvas_size: Tuple[int, int] = (1200, 600),
+        metrics_sidebar_width: int = 0,
     ):
         """
         Initialize overlay renderer.
@@ -51,21 +52,53 @@ class OverlayRenderer:
         """
         self.roi_size = roi_size
         self.main_size = main_size
-        self.canvas_size = canvas_size
+        self.sidebar_width = max(0, metrics_sidebar_width)
+
+        width_needed = self.sidebar_width + self.main_size[0] + self.roi_size[0]
+        height_needed = max(self.main_size[1], self.roi_size[1])
+        canvas_width = max(canvas_size[0], width_needed)
+        canvas_height = max(canvas_size[1], height_needed)
+        self.canvas_size = (canvas_width, canvas_height)
         self.roi_center = (roi_size[0] // 2, roi_size[1] // 2)
         self._roi_y_offset = (self.canvas_size[1] - self.roi_size[1]) // 2
-        self._main_panel_tl = (0, 0)
-        self._main_panel_br = (self.main_size[0] - 1, self.main_size[1] - 1)
-        self._roi_panel_tl = (self.main_size[0], self._roi_y_offset)
+        self._main_panel_tl = (self.sidebar_width, 0)
+        self._main_panel_br = (
+            self.sidebar_width + self.main_size[0] - 1,
+            self.main_size[1] - 1,
+        )
+        self._roi_panel_tl = (
+            self.sidebar_width + self.main_size[0],
+            self._roi_y_offset,
+        )
         self._roi_panel_br = (
-            self.main_size[0] + self.roi_size[0] - 1,
+            self.sidebar_width + self.main_size[0] + self.roi_size[0] - 1,
             self._roi_y_offset + self.roi_size[1] - 1,
         )
-        self._main_slice = np.s_[0:self.main_size[1], 0:self.main_size[0]]
+        self._main_slice = np.s_[
+            0:self.main_size[1],
+            self.sidebar_width:self.sidebar_width + self.main_size[0],
+        ]
         self._roi_slice = np.s_[
             self._roi_y_offset:self._roi_y_offset + self.roi_size[1],
-            self.main_size[0]:self.main_size[0] + self.roi_size[0],
+            self.sidebar_width + self.main_size[0]:
+            self.sidebar_width + self.main_size[0] + self.roi_size[0],
         ]
+        self._sidebar_slice = None
+        self._sidebar_panel_tl: Optional[Tuple[int, int]] = None
+        self._sidebar_panel_br: Optional[Tuple[int, int]] = None
+        if self.sidebar_width:
+            self._sidebar_slice = np.s_[
+                0:self.canvas_size[1],
+                0:self.sidebar_width,
+            ]
+            inset = max(10, min(26, self.sidebar_width // 5))
+            x_pad = max(6, inset // 2)
+            self._sidebar_panel_tl = (x_pad, inset)
+            right = max(x_pad + 1, self.sidebar_width - x_pad)
+            right = min(self.sidebar_width - 1, right)
+            bottom = max(inset + 1, self.canvas_size[1] - inset)
+            bottom = min(self.canvas_size[1] - 1, bottom)
+            self._sidebar_panel_br = (right, bottom)
         self._canvas_background = self._build_canvas_background()
         self._typography = Typography()
         self._chip_drawer = ChipDrawer(self._typography)
@@ -74,6 +107,17 @@ class OverlayRenderer:
     def _build_canvas_background(self) -> np.ndarray:
         """Precompute the gradient canvas with glass panels."""
         background = self._create_gradient_background()
+        if (
+            self._sidebar_panel_tl is not None
+            and self._sidebar_panel_br is not None
+            and self._sidebar_panel_br[0] - self._sidebar_panel_tl[0] > 8
+        ):
+            self._add_glass_panel(
+                background,
+                self._sidebar_panel_tl,
+                self._sidebar_panel_br,
+                opacity=0.28,
+            )
         self._add_glass_panel(background, self._main_panel_tl, self._main_panel_br)
         self._add_glass_panel(background, self._roi_panel_tl, self._roi_panel_br)
         return background
@@ -136,8 +180,6 @@ class OverlayRenderer:
         self,
         frame: np.ndarray,
         overlay_mode: int,
-        hud_metrics: Optional[Tuple[float, float, float]] = None,
-        draw_traffic_light_fn: Optional[callable] = None
     ) -> np.ndarray:
         """
         Render main camera view with optional HUD.
@@ -145,52 +187,85 @@ class OverlayRenderer:
         Args:
             frame: Raw camera frame
             overlay_mode: Current overlay mode (OVERLAY_MIN, RINGS, FULL, ALIGN)
-            hud_metrics: Optional tuple of (brightness, focus, edge_density)
-            draw_traffic_light_fn: Optional function to draw traffic light
 
         Returns:
             Resized and annotated main panel
         """
-        disp_main = cv2.resize(frame, self.main_size)
+        return cv2.resize(frame, self.main_size)
 
-        # HUD in FULL mode only
-        if overlay_mode == OVERLAY_FULL and hud_metrics is not None:
-            b_mean, f_var, e_pct = hud_metrics
-            metric_chips = build_metric_chips(b_mean, f_var, e_pct)
+    def draw_metric_sidebar(
+        self,
+        canvas: np.ndarray,
+        hud_metrics: Optional[Tuple[float, float, float]] = None,
+    ) -> np.ndarray:
+        """Draw compact metric chips in the dedicated sidebar area."""
 
-            x = 24
+        if hud_metrics is None or self.sidebar_width <= 0:
+            return canvas
+
+        if self._sidebar_panel_tl is not None:
+            x = self._sidebar_panel_tl[0] + 4
+            y = self._sidebar_panel_tl[1] + 4
+        else:
+            x = 12
             y = 18
-            chip_height = 0
-            for chip in metric_chips:
-                width, height = self._chip_drawer.draw_metric_chip(
-                    disp_main,
-                    origin=(x, y),
-                    label=chip.label,
-                    value=chip.value,
-                    status=chip.status,
-                    subtitle=chip.subtitle,
-                )
-                x += width + 12
-                chip_height = max(chip_height, height)
 
-            overall_status = summarise_quality(metric_chips)
-            _, overall_height = self._chip_drawer.draw_compact_chip(
-                disp_main,
-                origin=(24, y + chip_height + 6),
-                text=f"Quality {overall_status.upper()}",
-                status=overall_status,
+        b_mean, f_var, e_pct = hud_metrics
+        metric_chips = build_metric_chips(b_mean, f_var, e_pct)
+        if not metric_chips:
+            return canvas
+
+        max_y = self.canvas_size[1] - 18
+        chip_gap = 10
+
+        for chip in metric_chips:
+            _, height = self._chip_drawer.draw_metric_chip(
+                canvas,
+                origin=(x, y),
+                label=chip.label,
+                value=chip.value,
+                status=chip.status,
+                subtitle=chip.subtitle,
+                compact=True,
             )
+            y += height + chip_gap
+            if y >= max_y:
+                break
 
-            if draw_traffic_light_fn is not None:
-                draw_traffic_light_fn(
-                    disp_main,
-                    b_mean,
-                    f_var,
-                    e_pct,
-                    org=(24, y + chip_height + overall_height + 20),
+        overall_status = summarise_quality(metric_chips)
+        _, summary_height = self._chip_drawer.draw_compact_chip(
+            canvas,
+            origin=(x, y),
+            text=f"Quality {overall_status.upper()}",
+            status=overall_status,
+        )
+        y += summary_height + 12
+
+        if y < max_y:
+            radius = 7
+            spacing = radius * 2 + 8
+            indicator_x = x + radius + 4
+            indicator_y = y + radius
+            labels = ["B", "F", "E"]
+            for idx, chip in enumerate(metric_chips[:3]):
+                palette = self._chip_drawer.get_palette(chip.status)
+                color = palette.get("indicator", palette["fill"])
+                cv2.circle(canvas, (indicator_x, indicator_y), radius, color, -1, cv2.LINE_AA)
+                cv2.circle(canvas, (indicator_x, indicator_y), radius, palette["border"], 1, cv2.LINE_AA)
+                letter = labels[idx]
+                text_w, text_h, text_base = self._typography.measure(letter, 16)
+                text_x = int(indicator_x - text_w / 2)
+                text_y = int(indicator_y + (text_h - text_base) / 2)
+                self._typography.draw(
+                    canvas,
+                    letter,
+                    (text_x, text_y),
+                    16,
+                    palette["text_primary"],
                 )
+                indicator_x += spacing
 
-        return disp_main
+        return canvas
 
     def render_roi_base(
         self,
@@ -747,6 +822,12 @@ class OverlayRenderer:
 
         self._draw_panel_border(canvas, self._main_panel_tl, self._main_panel_br)
         self._draw_panel_border(canvas, self._roi_panel_tl, self._roi_panel_br)
+        if (
+            self._sidebar_panel_tl is not None
+            and self._sidebar_panel_br is not None
+            and self.sidebar_width > 0
+        ):
+            self._draw_panel_border(canvas, self._sidebar_panel_tl, self._sidebar_panel_br)
 
         if paused:
             cv2.putText(

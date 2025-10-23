@@ -173,7 +173,8 @@ class DartVisionApp:
         self.overlay_renderer = OverlayRenderer(
             roi_size=ROI_SIZE,
             main_size=(800, 600),
-            canvas_size=(1200, 600)
+            canvas_size=(1420, 600),
+            metrics_sidebar_width=220,
         )
         self.hough_aligner = None  # HoughAlignerManager, initialized after board_cfg
 
