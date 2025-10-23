@@ -50,6 +50,81 @@ class OverlayRenderer:
         self.main_size = main_size
         self.canvas_size = canvas_size
         self.roi_center = (roi_size[0] // 2, roi_size[1] // 2)
+        self._roi_y_offset = (self.canvas_size[1] - self.roi_size[1]) // 2
+        self._main_panel_tl = (0, 0)
+        self._main_panel_br = (self.main_size[0] - 1, self.main_size[1] - 1)
+        self._roi_panel_tl = (self.main_size[0], self._roi_y_offset)
+        self._roi_panel_br = (
+            self.main_size[0] + self.roi_size[0] - 1,
+            self._roi_y_offset + self.roi_size[1] - 1,
+        )
+        self._main_slice = np.s_[0:self.main_size[1], 0:self.main_size[0]]
+        self._roi_slice = np.s_[
+            self._roi_y_offset:self._roi_y_offset + self.roi_size[1],
+            self.main_size[0]:self.main_size[0] + self.roi_size[0],
+        ]
+        self._canvas_background = self._build_canvas_background()
+
+    def _build_canvas_background(self) -> np.ndarray:
+        """Precompute the gradient canvas with glass panels."""
+        background = self._create_gradient_background()
+        self._add_glass_panel(background, self._main_panel_tl, self._main_panel_br)
+        self._add_glass_panel(background, self._roi_panel_tl, self._roi_panel_br)
+        return background
+
+    def _create_gradient_background(self) -> np.ndarray:
+        """Create a subtle horizontal/vertical gradient as base background."""
+        height, width = self.canvas_size[1], self.canvas_size[0]
+        left_color = np.array([36, 32, 58], dtype=np.float32)
+        right_color = np.array([92, 32, 110], dtype=np.float32)
+        horizontal = np.linspace(0.0, 1.0, width, dtype=np.float32)[:, None]
+        row = left_color + (right_color - left_color) * horizontal
+        gradient = np.tile(row[np.newaxis, :, :], (height, 1, 1))
+        vertical = np.linspace(1.0, 0.82, height, dtype=np.float32)[:, None, None]
+        gradient = gradient * vertical
+        return np.clip(gradient, 0, 255).astype(np.uint8)
+
+    def _add_glass_panel(
+        self,
+        base: np.ndarray,
+        top_left: Tuple[int, int],
+        bottom_right: Tuple[int, int],
+        opacity: float = 0.32
+    ) -> None:
+        """Overlay a blurred translucent panel to emulate glassmorphism."""
+        overlay = np.zeros_like(base, dtype=np.uint8)
+        cv2.rectangle(overlay, top_left, bottom_right, (255, 255, 255), -1, cv2.LINE_AA)
+        blurred = cv2.GaussianBlur(overlay, (0, 0), sigmaX=25, sigmaY=25)
+        cv2.addWeighted(blurred, opacity, base, 1.0, 0.0, dst=base)
+
+        # Add a faint highlight band near the top of the panel for depth.
+        highlight = np.zeros_like(base, dtype=np.uint8)
+        y0, y1 = top_left[1], bottom_right[1]
+        highlight_height = max(8, int((y1 - y0) * 0.28))
+        highlight_bottom = min(y1, y0 + highlight_height)
+        cv2.rectangle(
+            highlight,
+            top_left,
+            (bottom_right[0], highlight_bottom),
+            (255, 255, 255),
+            -1,
+            cv2.LINE_AA,
+        )
+        highlight = cv2.GaussianBlur(highlight, (0, 0), sigmaX=13, sigmaY=13)
+        cv2.addWeighted(highlight, opacity * 0.55, base, 1.0, 0.0, dst=base)
+
+    def _draw_panel_border(
+        self,
+        canvas: np.ndarray,
+        top_left: Tuple[int, int],
+        bottom_right: Tuple[int, int]
+    ) -> None:
+        """Draw a crisp border and accent line for glass panels."""
+        cv2.rectangle(canvas, top_left, bottom_right, (235, 235, 245), 1, cv2.LINE_AA)
+        if bottom_right[0] - top_left[0] > 30:
+            accent_start = (top_left[0] + 12, top_left[1] + 8)
+            accent_end = (bottom_right[0] - 12, top_left[1] + 8)
+            cv2.line(canvas, accent_start, accent_end, (200, 180, 255), 1, cv2.LINE_AA)
 
     def render_main_panel(
         self,
@@ -553,25 +628,31 @@ class OverlayRenderer:
         Returns:
             Final composed canvas
         """
-        canvas = np.zeros((self.canvas_size[1], self.canvas_size[0], 3), dtype=np.uint8)
+        canvas = self._canvas_background.copy()
 
-        # Place main panel (left side)
-        canvas[0:self.main_size[1], 0:self.main_size[0]] = main_panel
+        if main_panel.shape[0:2] != (self.main_size[1], self.main_size[0]):
+            main_panel = cv2.resize(main_panel, self.main_size)
+        if roi_panel.shape[0:2] != (self.roi_size[1], self.roi_size[0]):
+            roi_panel = cv2.resize(roi_panel, self.roi_size)
 
-        # Place ROI panel (right side, vertically centered)
-        y_offset = (self.canvas_size[1] - self.roi_size[1]) // 2
-        canvas[y_offset:y_offset + self.roi_size[1], self.main_size[0]:self.main_size[0] + self.roi_size[0]] = roi_panel
+        main_region = canvas[self._main_slice]
+        canvas[self._main_slice] = cv2.addWeighted(main_panel, 0.92, main_region, 0.08, 0)
 
-        # PAUSED indicator
+        roi_region = canvas[self._roi_slice]
+        canvas[self._roi_slice] = cv2.addWeighted(roi_panel, 0.92, roi_region, 0.08, 0)
+
+        self._draw_panel_border(canvas, self._main_panel_tl, self._main_panel_br)
+        self._draw_panel_border(canvas, self._roi_panel_tl, self._roi_panel_br)
+
         if paused:
             cv2.putText(
                 canvas,
                 "PAUSED",
-                (500, 50),
+                (480, 56),
                 cv2.FONT_HERSHEY_DUPLEX,
-                1.5,
-                (0, 165, 255),
-                3
+                1.4,
+                (245, 210, 180),
+                3,
             )
 
         return canvas
