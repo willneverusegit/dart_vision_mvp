@@ -648,178 +648,15 @@ class DartVisionApp:
     # _draw_help_overlay removed - now handled by HUDRenderer
     # ----- Setup -----
     def setup(self) -> bool:
-        logger.info("=" * 60)
-        logger.info("DART VISION MVP — init (UnifiedCalibrator only)")
-        logger.info("=" * 60)
-        logger.info(
-            "Controls: q=Quit, p=Pause, d=Debug, m=Motion overlay, r=Reset darts, s=Screenshot, c=Recalibrate, o=Overlay mode, X=Save (unified), H=Heatmap, P=Polar")
+        """
+        Initialize app components.
 
-        # 1) Explizit per CLI geladen?
-        if self.args.load_yaml:
-            try:
-                data = load_calibration_yaml(self.args.load_yaml)
-                self._apply_loaded_yaml(data)  # neuer Loader (typed)
-                # ⬇️ Zusatz-Log: welches Schema ist aktiv?
-                if getattr(self, "uc", None) is not None:
-                    logger.info("[CALIB] Unified calibration aktiv (homography+metrics+overlay_adjust+roi_adjust).")
-                else:
-                    logger.info("[CALIB] Typed/Legacy calibration aktiv.")
-            except Exception as e:
-                logger.error(f"[LOAD] Failed to load YAML from {self.args.load_yaml}: {e}")
+        Delegates to AppInitializer for clean, maintainable setup.
+        """
+        from src.core import AppInitializer
 
-        # 2) Legacy-Default nur laden, wenn vorhanden und kein --load-yaml gesetzt
-        elif os.path.exists(CALIB_YAML):
-            try:
-                cfg = load_calibration_yaml(CALIB_YAML)
-                if cfg:
-                    self._apply_loaded_calibration(cfg)  # verträgt beide Schemata
-                    logger.info(f"[CALIB] Loaded {CALIB_YAML}")
-                    # ⬇️ Zusatz-Log: welches Schema ist aktiv?
-                    if getattr(self, "uc", None) is not None:
-                        logger.info("[CALIB] Unified calibration aktiv (homography+metrics+overlay_adjust+roi_adjust).")
-                    else:
-                        logger.info("[CALIB] Typed/Legacy calibration aktiv.")
-            except Exception as e:
-                logger.warning(f"[CALIB] Could not load {CALIB_YAML}: {e}")
-        else:
-            if self.args.calibrate:
-                ok = self._calibration_ui()
-                if not ok:
-                    return False
-            else:
-                logger.warning("[CALIB] No calibration present; run with --calibrate for best accuracy.")
-
-        # ROI
-        self.roi = ROIProcessor(ROIConfig(roi_size=ROI_SIZE, polar_enabled=False))
-        if self.homography is not None or getattr(self, "homography_eff", None) is not None:
-            H_eff = self.homography_eff if getattr(self, "homography_eff", None) is not None else self.homography
-            self.roi.set_homography_from_matrix(H_eff)
-
-            # Falls noch keine Basis gesetzt ist und wir bereits einen ROI-Radius kennen:
-            if (self.roi_base_radius is None) and (self.roi_board_radius and self.roi_board_radius > 0):
-                self.roi_base_radius = float(self.roi_board_radius)
-                logger.debug(f"[ROI] base radius set -> {self.roi_base_radius:.2f}px")
-
-        # --- Board mapping config laden ---
-        board_path = Path(self.args.board_yaml).expanduser().resolve()
-        if not board_path.exists():
-            logger.warning(f"[BOARD] {board_path} nicht gefunden – nutze Defaults.")
-            self.board_cfg = BoardConfig()  # Defaults
-        else:
-            try:
-                with open(board_path, "r", encoding="utf-8") as f:
-                    cfg_dict = yaml.safe_load(f) or {}
-                self.board_cfg = BoardConfig(**cfg_dict)
-                logger.info(f"[BOARD] geladen: {board_path}")
-            except Exception as e:
-                logger.warning(f"[BOARD] Fehler beim Laden ({e}) – nutze Defaults.")
-                self.board_cfg = BoardConfig()
-
-        # Mapper instanziieren (nur wenn Homography/ROI-Radius vorhanden)
-        # Mapper instanziieren (Unified bevorzugt)
-        if self.board_cfg is not None and (
-                self.homography is not None or getattr(self, "homography_eff", None) is not None):
-            if getattr(self, "uc", None) is not None:
-                # Single Source of Truth
-                self._sync_mapper_from_unified()
-                self._ensure_roi_annulus_mask()
-
-                logger.info("[BOARD] Mapper init (unified) | rOD=%.1f px, rot=%.2f°",
-                            self.board_mapper.calib.r_outer_double_px, self.board_mapper.calib.rotation_deg)
-                # --- After mapper init: provide board center to dart detector config ---
-                if hasattr(self, "dart") and self.dart is not None and self.board_mapper is not None:
-                    self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
-                    self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
-                    logger.debug(
-                        f"[DART] Cal center propagated: ({self.dart.config.cal_cx:.1f}, {self.dart.config.cal_cy:.1f})")
-            else:
-                # Legacy-Fallback (nur wenn wirklich keine UC vorhanden ist)
-                if self.roi_board_radius and self.roi_board_radius > 0:
-                    self.board_mapper = BoardMapper(
-                        self.board_cfg,
-                        Calibration(
-                            cx=float(ROI_CENTER[0] + self.overlay_center_dx),
-                            cy=float(ROI_CENTER[1] + self.overlay_center_dy),
-                            r_outer_double_px=float(self.roi_board_radius) * float(getattr(self, "overlay_scale", 1.0)),
-                            rotation_deg=float(getattr(self, "overlay_rot_deg", 0.0)),
-                        ),
-                    )
-                    logger.info("[BOARD] Mapper init (legacy) | rot=%.2f°, scale=%.4f, roiR=%.1f px",
-                                float(getattr(self, "overlay_rot_deg", 0.0)),
-                                float(getattr(self, "overlay_scale", 1.0)),
-                                float(self.roi_board_radius))
-                else:
-                    self.board_mapper = None
-                    logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Radius).")
-        else:
-            self.board_mapper = None
-            logger.warning("[BOARD] Mapper nicht initialisiert (fehlende Homography/Config).")
-
-        # Vision modules
-        self.motion = MotionDetector(MotionConfig(
-            var_threshold=self.args.motion_threshold,
-            motion_pixel_threshold=self.args.motion_pixels,
-            detect_shadows=True
-        ))
-        base_cfg = DartDetectorConfig(
-            confirmation_frames=self.args.confirmation_frames,
-            position_tolerance_px=20,
-            min_area=10, max_area=1000,  # werden vom Preset überschrieben
-        )
-        det_cfg = apply_detector_preset(base_cfg, self.args.detector_preset)
-        self.dart = DartImpactDetector(det_cfg)
-        self.current_preset = self.args.detector_preset  # für HUD
-        self.mapper = FieldMapper(FieldMapperConfig())
-        self.fps = FPSCounter(window_size=30)
-
-        # Camera
-        cam_src = self.args.video if self.args.video else self.args.webcam
-        is_video_file = isinstance(cam_src, str)
-
-        cam_cfg = CameraConfig(
-            src=cam_src,
-            max_queue_size=5,
-            buffer_size=1,
-            width=self.args.width,
-            height=self.args.height,
-            fps=getattr(self.args, "fps", None),
-            video_sync=(self.args.video_sync if is_video_file else "off"),
-            playback=(self.args.playback if is_video_file else 1.0),
-        )
-        self.camera = ThreadedCamera(cam_cfg)
-        if not self.camera.start():
-            logger.error("Camera start failed.")
-            return False
-
-        # Optional: nur fürs Log (die echte Steuerung macht ThreadedCamera)
-        if is_video_file:
-            fps = float(self.camera.capture.get(cv2.CAP_PROP_FPS) or 0.0)
-            if not np.isfinite(fps) or fps <= 0:
-                fps = 30.0
-            logger.info(f"[VIDEO] nominal FPS={fps:.3f}, sync={self.args.video_sync}, speed={self.args.playback:.2f}x")
-        # --- Heatmap config (optional) ---
-
-        try:
-            overlay_cfg_path = Path("src/overlay/overlay.yaml")
-            overlay_cfg = yaml.safe_load(open(overlay_cfg_path, "r", encoding="utf-8")) or {}
-            hcfg = (overlay_cfg or {}).get("heatmap", {}) or {}
-        except Exception:
-            hcfg = {}
-        self.heatmap_enabled = bool(hcfg.get("enabled", True))
-        self.polar_enabled = bool((hcfg.get("polar", {}) or {}).get("enabled", True))
-
-        # --- Heatmap init (ROI-size based, so no conversions needed) ---
-        if self.heatmap_enabled:
-            self.hm = HeatmapAccumulator(frame_size = (ROI_SIZE[0], ROI_SIZE[1]),
-                scale = float(hcfg.get("scale", 0.25)),
-                alpha = float(hcfg.get("alpha", 0.35)),
-                stamp_radius_px = int(hcfg.get("stamp_radius_px", 6)),
-                decay_half_life_s = hcfg.get("decay_half_life_s", 120),
-            )
-        if self.polar_enabled:
-            cell = int((hcfg.get("polar", {}) or {}).get("cell_px", 14))
-            self.ph = PolarHeatmap(cell_size=(cell, cell))
-        return True
+        initializer = AppInitializer(self, self.args)
+        return initializer.initialize()
 
     # ----- Calibration UI (only UnifiedCalibrator) -----
     def _calibration_ui(self) -> bool:
@@ -925,204 +762,27 @@ class DartVisionApp:
         return success
 
     def _apply_loaded_yaml(self, data: dict):
-        t = (data or {}).get("type")
-        if t == "charuco":
-            cam = data.get("camera", {})
-            K = cam.get("matrix");
-            D = cam.get("dist_coeffs")
-            if K is not None:
-                self.cal.K = np.array(K, dtype=np.float64)
-            if D is not None:
-                self.cal.D = np.array(D, dtype=np.float64).reshape(-1, 1)
-            self.cal._rms = float(cam.get("rms_px", 0.0))
-            self.cal.last_image_size = tuple(cam.get("image_size", (0, 0)))
-            H = (data.get("homography") or {}).get("H")
-            if H is not None:
-                self.homography = np.array(H, dtype=np.float64)
-            self.logger.info("[LOAD] Applied ChArUco intrinsics from YAML.")
-            # Optional: overlay_adjust
-            ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
-            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
-            abs_r = ov.get("r_outer_double_px")
-            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
-                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
-            # nach den existierenden overlay_adjust-Feldern
-            roi_adj = (data or {}).get("roi_adjust") or {}
-            self.roi_rot_deg = float(roi_adj.get("rot_deg", self.roi_rot_deg))
-            self.roi_scale = float(roi_adj.get("scale", self.roi_scale))
-            self.roi_tx = float(roi_adj.get("tx_px", self.roi_tx))
-            self.roi_ty = float(roi_adj.get("ty_px", self.roi_ty))
-            self._roi_adjust_dirty = True
+        """
+        Apply calibration from YAML data (typed schema).
 
+        Delegates to CalibLoader for clean, maintainable loading.
+        """
+        from src.calibration.calib_loader import CalibLoader
 
-        elif t == "aruco_quad":
-            H = (data.get("homography") or {}).get("H")
-            if H is not None:
-                self.homography = np.array(H, dtype=np.float64)
-            scale = data.get("scale") or {}
-            self.mm_per_px = scale.get("mm_per_px")
-            self.logger.info("[LOAD] Applied ArUco-Quad homography from YAML.")
-            # Optional: overlay_adjust
-            ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
-            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
-            abs_r = ov.get("r_outer_double_px")
-            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
-                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
-            # nach den existierenden overlay_adjust-Feldern
-            roi_adj = (data or {}).get("roi_adjust") or {}
-            self.roi_rot_deg = float(roi_adj.get("rot_deg", self.roi_rot_deg))
-            self.roi_scale = float(roi_adj.get("scale", self.roi_scale))
-            self.roi_tx = float(roi_adj.get("tx_px", self.roi_tx))
-            self.roi_ty = float(roi_adj.get("ty_px", self.roi_ty))
-            self._roi_adjust_dirty = True
-
-
-        elif t == "homography_only":
-            H = (data.get("homography") or {}).get("H")
-            if H is not None:
-                self.homography = np.array(H, dtype=np.float64)
-            metrics = data.get("metrics") or {}
-            self.mm_per_px = metrics.get("mm_per_px")
-            self.logger.info("[LOAD] Applied Homography-only from YAML.")
-            # Optional: overlay_adjust
-            ov = (data or {}).get("overlay_adjust") or {}
-            if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
-            if "scale" in ov:        self.overlay_scale = float(ov["scale"])
-            if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])  # NEU
-            if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])  # NEU
-            # Optional: absolut gespeicherter Radius -> Scale neu berechnen
-            abs_r = ov.get("r_outer_double_px")
-            if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
-                self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
-            # nach den existierenden overlay_adjust-Feldern
-            roi_adj = (data or {}).get("roi_adjust") or {}
-            self.roi_rot_deg = float(roi_adj.get("rot_deg", self.roi_rot_deg))
-            self.roi_scale = float(roi_adj.get("scale", self.roi_scale))
-            self.roi_tx = float(roi_adj.get("tx_px", self.roi_tx))
-            self.roi_ty = float(roi_adj.get("ty_px", self.roi_ty))
-            self._roi_adjust_dirty = True
-
-        else:
-            self.logger.warning("[LOAD] Unknown or missing type in YAML.")
+        loader = CalibLoader(self)
+        loader.apply_yaml_data(data)
 
     def _apply_loaded_calibration(self, cfg: dict):
         """
-        Backward/forward compatible loader:
-          - Unified schema (preferred): calibration.{homography, metrics, overlay_adjust, roi_adjust}
-          - New typed schema (your existing): type: charuco | aruco_quad | homography_only  -> _apply_loaded_yaml()
-          - Legacy flat schema: method, homography (list|{H:list}), mm_per_px, camera_matrix, dist_coeffs, ...
+        Apply calibration from any schema format.
+
+        Delegates to CalibLoader for clean, maintainable loading.
+        Supports unified, typed, and legacy schemas.
         """
-        if not cfg:
-            return
+        from src.calibration.calib_loader import CalibLoader
 
-        # --- 0) Unified schema? (Single Source of Truth) --------------------------
-        # Accept both nested ("calibration": {...}) and flat root.
-        root = cfg.get("calibration", cfg)
-        unified_keys = ("homography", "metrics", "overlay_adjust", "roi_adjust")
-        if all(k in root for k in unified_keys):
-            try:
-                # Build UC model
-                self.uc = UnifiedCalibration(
-                    homography=Homography(**root["homography"]),
-                    metrics=Metrics(**root["metrics"]),
-                    overlay_adjust=OverlayAdjust(**root["overlay_adjust"]),
-                    roi_adjust=ROIAdjust(**root["roi_adjust"]),
-                )
-                # Base & effective homography
-                self.homography = np.asarray(self.uc.homography.H, dtype=np.float64)
-                self.homography_eff = compute_effective_H(self.uc)
-
-                # Mapper sofort synchronisieren (Unified Pfad)
-                self._sync_mapper_from_unified()
-                self._roi_annulus_mask = None
-                self._ensure_roi_annulus_mask()
-                return
-            except Exception as e:
-                # Falls Unified vorhanden aber invalide -> sauber auf Legacy/New typed zurückfallen
-                try:
-                    self.logger.warning(f"Unified calibration present but failed to parse/apply: {e}")
-                except Exception:
-                    pass  # logger evtl. nicht initialisiert
-
-        # --- 1) New typed schema? delegate to your existing path -------------------
-        if "type" in cfg:
-            self._apply_loaded_yaml(cfg)
-            return
-
-        # --- 2) Legacy schema handling (dein bestehender Code + minimal ergänzt) ---
-        # homography can be a list or {"H": list}
-        H_node = cfg.get("homography")
-        if isinstance(H_node, dict):
-            H_list = H_node.get("H")
-        else:
-            H_list = H_node
-
-        self.homography = np.array(H_list, dtype=np.float64) if H_list is not None else None
-        self.mm_per_px = float(cfg.get("mm_per_px", 1.0))
-        self.center_px = tuple(cfg.get("center_px", [0, 0]))
-        self.roi_board_radius = float(cfg.get("roi_board_radius", 160.0))
-
-        # camera intrinsics (optional in legacy)
-        if cfg.get("camera_matrix") is not None:
-            self.cal.K = np.array(cfg["camera_matrix"], dtype=np.float64)
-        if cfg.get("dist_coeffs") is not None:
-            self.cal.D = np.array(cfg["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
-
-        # Overlay-Adjust (legacy-style); bei Unified NICHT hier setzen
-        ov = (cfg or {}).get("overlay_adjust") or {}
-        if "rotation_deg" in ov: self.overlay_rot_deg = float(ov["rotation_deg"])
-        if "scale" in ov:        self.overlay_scale = float(ov["scale"])
-        if "center_dx_px" in ov: self.overlay_center_dx = float(ov["center_dx_px"])
-        if "center_dy_px" in ov: self.overlay_center_dy = float(ov["center_dy_px"])
-        abs_r = ov.get("r_outer_double_px")
-        if abs_r is not None and self.roi_board_radius and self.roi_board_radius > 0:
-            self.overlay_scale = float(abs_r) / float(self.roi_board_radius)
-
-        # OPTIONAL: Aus Legacy Feldern eine flüchtige Unified-Struktur bauen,
-        # damit restliche Pipeline einheitlich auf self.uc/self.homography_eff arbeitet.
-        try:
-            if self.homography is not None:
-                H = self.homography
-            else:
-                H = np.eye(3, dtype=np.float64)
-            # ROI center baseline, falls bei dir als Konstante hinterlegt:
-            cx0 = float(getattr(self, "ROI_CENTER", (0.0, 0.0))[0])
-            cy0 = float(getattr(self, "ROI_CENTER", (0.0, 0.0))[1])
-            r_od = float(self.roi_board_radius) if hasattr(self, "roi_board_radius") else 160.0
-            rot = float(getattr(self, "overlay_rot_deg", 0.0))
-            dx = float(getattr(self, "overlay_center_dx", 0.0))
-            dy = float(getattr(self, "overlay_center_dy", 0.0))
-
-            self.uc = UnifiedCalibration(
-                homography=Homography(H=H.tolist()),
-                metrics=Metrics(center_px=(cx0, cy0), roi_board_radius=r_od),
-                overlay_adjust=OverlayAdjust(
-                    rotation_deg=rot,
-                    r_outer_double_px=float(r_od * float(getattr(self, "overlay_scale", 1.0))),
-                    center_dx_px=dx,
-                    center_dy_px=dy,
-                ),
-                roi_adjust=ROIAdjust(),  # neutral (unbekannt)
-            )
-            self.homography_eff = compute_effective_H(self.uc)
-            self._sync_mapper_from_unified()
-            self._roi_annulus_mask = None
-            self._ensure_roi_annulus_mask()
-            if self.dart is not None and self.board_mapper is not None:
-                self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
-                self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
-
-        except Exception:
-            # Wenn das fehlschlägt, läuft Legacy ohne Unified weiter.
-            pass
+        loader = CalibLoader(self)
+        loader.apply_calibration(cfg)
 
     # ----- Pipeline -----
     def process_frame(self, frame):
