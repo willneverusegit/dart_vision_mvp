@@ -197,6 +197,7 @@ class DartVisionApp:
         self.overlay_center_dy: float = 0.0
         self.align_auto: bool = False  # NEU: Hough-Autoausrichtung an/aus
         self.show_help = False  # Hilfe-Overlay an/aus
+        self.board_calibration_mode = False  # Board overlay calibration mode (colored dartboard)
 
         # ROI Fine-tune (wirken auf die Warphomographie)
         self.roi_tx = 0.0  # px (Ausgaberaum)
@@ -691,6 +692,9 @@ class DartVisionApp:
 
             # System state
             paused=self.paused,
+
+            # Board calibration mode
+            board_calibration_mode=self.board_calibration_mode,
 
             # CLAHE flag
             use_clahe=getattr(self.args, "clahe", False)

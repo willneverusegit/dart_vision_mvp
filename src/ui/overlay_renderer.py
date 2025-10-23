@@ -374,7 +374,8 @@ class OverlayRenderer:
         calibration: 'Calibration',
         overlay_mode: int,
         board_mapper: Optional['BoardMapper'] = None,
-        board_cfg: Optional['BoardConfig'] = None
+        board_cfg: Optional['BoardConfig'] = None,
+        board_calibration_mode: bool = False
     ) -> np.ndarray:
         """
         Render board ring overlays based on mode.
@@ -385,6 +386,7 @@ class OverlayRenderer:
             overlay_mode: Current overlay mode
             board_mapper: Optional BoardMapper for full overlay
             board_cfg: Optional BoardConfig for ALIGN mode
+            board_calibration_mode: Enable colored overlay + calibration guides
 
         Returns:
             Image with ring overlays
@@ -396,15 +398,31 @@ class OverlayRenderer:
         r_base = int(round(calibration.r_outer_double_px))
 
         # RINGS mode: Simple outer ring
-        if overlay_mode >= OVERLAY_RINGS:
+        if overlay_mode >= OVERLAY_RINGS and not board_calibration_mode:
             cv2.circle(img, (cx, cy), max(1, r_base), (0, 255, 0), 2, cv2.LINE_AA)
 
-        # FULL mode: Detailed mapping
+        # FULL mode: Colored dartboard overlay or detailed mapping
         if overlay_mode == OVERLAY_FULL and board_mapper is not None:
-            img[:] = draw_ring_circles(img, board_mapper)
-            img[:] = draw_sector_labels(img, board_mapper)
+            if board_calibration_mode:
+                # Colored dartboard overlay for calibration
+                from src.board.dartboard_colored_overlay import (
+                    draw_colored_dartboard_overlay,
+                    draw_calibration_guides
+                )
+                img[:] = draw_colored_dartboard_overlay(
+                    img, board_mapper, alpha=0.45, show_numbers=True
+                )
+                # Add calibration guides
+                img[:] = draw_calibration_guides(
+                    img, (cx, cy), r_base,
+                    show_crosshair=True, show_circles=False
+                )
+            else:
+                # Original detailed mapping (simple rings + sector labels)
+                img[:] = draw_ring_circles(img, board_mapper)
+                img[:] = draw_sector_labels(img, board_mapper)
 
-            # Center coordinates
+            # Center coordinates (always shown in FULL)
             cv2.putText(
                 img,
                 f"cx:{calibration.cx:.1f} cy:{calibration.cy:.1f}",
@@ -658,7 +676,8 @@ class OverlayRenderer:
         self,
         img: np.ndarray,
         overlay_mode: int,
-        align_auto: bool = False
+        align_auto: bool = False,
+        board_calibration_mode: bool = False
     ) -> np.ndarray:
         """
         Render minimal mode badge in ROI panel (top-left).
@@ -667,6 +686,7 @@ class OverlayRenderer:
             img: Image to draw on
             overlay_mode: Current overlay mode
             align_auto: Auto-align status (ALIGN mode only)
+            board_calibration_mode: Board calibration active
 
         Returns:
             Image with minimal mode badge
@@ -680,10 +700,15 @@ class OverlayRenderer:
 
         mode_value = modes.get(overlay_mode, "UNKNOWN")
 
-        # Minimal badge - just show mode
-        badge_color = (150, 150, 200)  # Soft gray-blue
-        if overlay_mode == OVERLAY_ALIGN:
-            badge_color = (0, 255, 255) if align_auto else (100, 200, 255)
+        # Override display if board calibration active
+        if board_calibration_mode:
+            mode_value = "CALIBRATE"
+            badge_color = (0, 255, 128)  # Bright green - calibration active
+        else:
+            # Minimal badge - just show mode
+            badge_color = (150, 150, 200)  # Soft gray-blue
+            if overlay_mode == OVERLAY_ALIGN:
+                badge_color = (0, 255, 255) if align_auto else (100, 200, 255)
 
         # Draw small badge at top-left
         cv2.putText(

@@ -59,6 +59,9 @@ def create_visualization_refactored(
     # System state
     paused: bool = False,
 
+    # Board calibration mode (new)
+    board_calibration_mode: bool = False,
+
     # CLAHE flag
     use_clahe: bool = False
 ) -> np.ndarray:
@@ -99,7 +102,8 @@ def create_visualization_refactored(
         calibration,
         overlay_mode,
         board_mapper,
-        board_cfg
+        board_cfg,
+        board_calibration_mode
     )
 
     # ===== HEATMAPS =====
@@ -155,7 +159,8 @@ def create_visualization_refactored(
     disp_roi = overlay_renderer.render_overlay_status(
         disp_roi,
         overlay_mode,
-        align_auto
+        align_auto,
+        board_calibration_mode
     )
 
     # ===== HELP OVERLAY =====
