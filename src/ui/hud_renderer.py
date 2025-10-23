@@ -13,6 +13,9 @@ import numpy as np
 from collections import deque
 from typing import Tuple, List, Optional
 
+from .typography import Typography, ChipDrawer
+from .hud_metrics import build_metric_chips, summarise_quality
+
 
 class HUDRenderer:
     """Renders HUD elements for image quality monitoring and user feedback."""
@@ -38,6 +41,8 @@ class HUDRenderer:
         self.focus_acceptable = 800.0
         self.edge_range = (5.0, 10.0)  # Good range
         self.edge_acceptable = (3.5, 15.0)  # Yellow range
+        self._typography = Typography()
+        self._chip_drawer = ChipDrawer(self._typography)
 
     def compute_metrics(self, gray: np.ndarray) -> Tuple[float, float, float]:
         """
@@ -114,9 +119,11 @@ class HUDRenderer:
             org: Starting position (x, y)
         """
         x, y = org
+        font_height = 26
         for ln in lines:
-            cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
-            y += 22
+            self._typography.draw(img, ln, (x, y), font_height, color)
+            _, h, base = self._typography.measure(ln, font_height)
+            y += h + base + 6
 
     def draw_traffic_light(
         self,
@@ -138,76 +145,28 @@ class HUDRenderer:
             e: Edge density percentage
             org: Top-left position (x, y)
         """
-        def status_brightness(v: float) -> str:
-            if self.brightness_range[0] <= v <= self.brightness_range[1]:
-                return 'G'
-            elif self.brightness_acceptable[0] <= v <= self.brightness_acceptable[1]:
-                return 'Y'
-            else:
-                return 'R'
-
-        def status_focus(v: float) -> str:
-            if v >= self.focus_good:
-                return 'G'
-            elif v >= self.focus_acceptable:
-                return 'Y'
-            else:
-                return 'R'
-
-        def status_edge(v: float) -> str:
-            if self.edge_range[0] <= v <= self.edge_range[1]:
-                return 'G'
-            elif self.edge_acceptable[0] <= v <= self.edge_acceptable[1]:
-                return 'Y'
-            else:
-                return 'R'
-
-        colors = {
-            'R': (36, 36, 255),   # Red (BGR)
-            'Y': (0, 255, 255),   # Yellow
-            'G': (0, 200, 0)      # Green
-        }
-
-        states = [
-            ("B", status_brightness(b)),
-            ("F", status_focus(f)),
-            ("E", status_edge(e))
-        ]
-
         x, y = org
-        w, h, pad = 18, 18, 8
+        chips = build_metric_chips(b, f, e)
+        for chip in chips:
+            _, height = self._chip_drawer.draw_metric_chip(
+                img,
+                origin=(x, y),
+                label=chip.label,
+                value=chip.value,
+                status=chip.status,
+                subtitle=chip.subtitle,
+                compact=True,
+            )
+            y += height + 6
 
-        # Title
-        cv2.putText(img, "Status:", (x, y - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-
-        # Individual indicators
-        for i, (label, status) in enumerate(states):
-            p1 = (x + i * (w + pad), y)
-            p2 = (p1[0] + w, p1[1] + h)
-
-            # Filled rectangle with status color
-            cv2.rectangle(img, p1, p2, colors[status], -1)
-            cv2.rectangle(img, p1, p2, (20, 20, 20), 1)  # Border
-
-            # Label below
-            cv2.putText(img, label, (p1[0], p2[1] + 16),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
-
-        # Overall status (ALL)
-        status_values = [s for _, s in states]
-        if all(s == 'G' for s in status_values):
-            overall = 'G'
-        elif 'R' in status_values:
-            overall = 'R'
-        else:
-            overall = 'Y'
-
-        X = x + 3 * (w + pad) + 20
-        cv2.putText(img, "ALL", (X, y - 10),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-        cv2.rectangle(img, (X, y), (X + w, y + h), colors[overall], -1)
-        cv2.rectangle(img, (X, y), (X + w, y + h), (20, 20, 20), 1)
+        overall = summarise_quality(chips)
+        overall_text = f"Quality {overall.upper()}"
+        self._chip_drawer.draw_compact_chip(
+            img,
+            origin=(x, y),
+            text=overall_text,
+            status=overall,
+        )
 
     def draw_help_overlay(self, img: np.ndarray):
         """

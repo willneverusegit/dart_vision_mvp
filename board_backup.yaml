@@ -1,0 +1,68 @@
+angles:
+  center_on_mid: true
+  clockwise: true
+  theta0_deg: 90
+  tolerance_deg: 1.0
+radii:
+  r_bull_inner: !!python/object/apply:numpy._core.multiarray.scalar
+  - &id001 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - !!binary |
+    O99PjZduoj8=
+  r_bull_outer: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    JLn8h/Tbtz8=
+  r_double_inner: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    si5uowG86z8=
+  r_double_outer: 1.0
+  r_triple_inner: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    fa62Yn/Z4T8=
+  r_triple_outer: !!python/object/apply:numpy._core.multiarray.scalar
+  - *id001
+  - !!binary |
+    nzws1Jrm4z8=
+  radial_tolerance: 0.01
+runtime:
+  use_hough_as_fallback: true
+  verify_calibration: true
+sectors:
+  order:
+  - 20
+  - 1
+  - 18
+  - 4
+  - 13
+  - 6
+  - 10
+  - 15
+  - 2
+  - 17
+  - 3
+  - 19
+  - 7
+  - 16
+  - 8
+  - 11
+  - 14
+  - 9
+  - 12
+  - 5
+  width_deg: 18.0
+version: 1

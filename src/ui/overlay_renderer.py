@@ -14,6 +14,9 @@ import numpy as np
 from typing import Optional, Tuple, List, TYPE_CHECKING
 from pathlib import Path
 
+from .typography import Typography, ChipDrawer
+from .hud_metrics import build_metric_chips, summarise_quality
+
 if TYPE_CHECKING:
     from src.board import BoardMapper, BoardConfig, Calibration
     from src.overlay.heatmap import HeatmapAccumulator
@@ -64,6 +67,8 @@ class OverlayRenderer:
             self.main_size[0]:self.main_size[0] + self.roi_size[0],
         ]
         self._canvas_background = self._build_canvas_background()
+        self._typography = Typography()
+        self._chip_drawer = ChipDrawer(self._typography)
 
     def _build_canvas_background(self) -> np.ndarray:
         """Precompute the gradient canvas with glass panels."""
@@ -150,28 +155,39 @@ class OverlayRenderer:
         # HUD in FULL mode only
         if overlay_mode == OVERLAY_FULL and hud_metrics is not None:
             b_mean, f_var, e_pct = hud_metrics
+            metric_chips = build_metric_chips(b_mean, f_var, e_pct)
 
-            # Determine HUD color
-            ok_b = 120.0 <= b_mean <= 170.0
-            ok_f = f_var >= 800.0
-            ok_e = 3.5 <= e_pct <= 15.0
-            hud_col = (0, 255, 0) if (ok_b and ok_f and ok_e) else (0, 200, 200)
+            x = 24
+            y = 18
+            chip_height = 0
+            for chip in metric_chips:
+                width, height = self._chip_drawer.draw_metric_chip(
+                    disp_main,
+                    origin=(x, y),
+                    label=chip.label,
+                    value=chip.value,
+                    status=chip.status,
+                    subtitle=chip.subtitle,
+                )
+                x += width + 12
+                chip_height = max(chip_height, height)
 
-            # Draw metrics text
-            cv2.putText(
+            overall_status = summarise_quality(metric_chips)
+            _, overall_height = self._chip_drawer.draw_compact_chip(
                 disp_main,
-                f"B:{b_mean:.0f} F:{int(f_var)} E:{e_pct:.1f}%",
-                (10, 24),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                hud_col,
-                2,
-                cv2.LINE_AA
+                origin=(24, y + chip_height + 6),
+                text=f"Quality {overall_status.upper()}",
+                status=overall_status,
             )
 
-            # Optional traffic light
             if draw_traffic_light_fn is not None:
-                draw_traffic_light_fn(disp_main, b_mean, f_var, e_pct, org=(10, 50))
+                draw_traffic_light_fn(
+                    disp_main,
+                    b_mean,
+                    f_var,
+                    e_pct,
+                    org=(24, y + chip_height + overall_height + 20),
+                )
 
         return disp_main
 
@@ -522,61 +538,93 @@ class OverlayRenderer:
             OVERLAY_ALIGN: "ALIGN"
         }
 
-        cv2.putText(
-            img,
-            f"Overlay: {modes.get(overlay_mode, 'UNKNOWN')}",
-            (self.roi_size[0] - 180, 24),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (200, 200, 200),
-            2,
-            cv2.LINE_AA
-        )
+        mode_value = modes.get(overlay_mode, "UNKNOWN")
+        mode_status = "accent"
+        mode_subtitle = "HUD"
+        if overlay_mode == OVERLAY_MIN:
+            mode_subtitle = "CLEAN"
+        elif overlay_mode == OVERLAY_RINGS:
+            mode_subtitle = "TRACK"
+        elif overlay_mode == OVERLAY_ALIGN:
+            mode_subtitle = "AUTO" if align_auto else "MANUAL"
+            mode_status = "accent" if align_auto else "info"
 
-        # Rotation and scale info
+        chips = [
+            {
+                "label": "Mode",
+                "value": mode_value,
+                "status": mode_status,
+                "subtitle": mode_subtitle,
+            }
+        ]
+
         if calibration is not None:
-            if unified_calibration is not None:
-                scale = float(calibration.r_outer_double_px) / float(
-                    unified_calibration.metrics.roi_board_radius
-                )
+            rotation = float(getattr(calibration, "rotation_deg", 0.0))
+            abs_rot = abs(rotation)
+            if abs_rot <= 1.0:
+                rot_status, rot_subtitle = "good", "LEVEL"
+            elif abs_rot <= 3.0:
+                rot_status, rot_subtitle = "warn", "OFFSET"
             else:
-                scale = 1.0
-
-            cv2.putText(
-                img,
-                f"rot:{calibration.rotation_deg:.1f}  scale:{scale:.3f}",
-                (self.roi_size[0] - 180, 46),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (220, 220, 220),
-                2,
-                cv2.LINE_AA
+                rot_status, rot_subtitle = "bad", "FIX"
+            chips.append(
+                {
+                    "label": "Rotation",
+                    "value": f"{rotation:.1f}°",
+                    "status": rot_status,
+                    "subtitle": rot_subtitle,
+                }
             )
 
-        # Preset info
-        cv2.putText(
-            img,
-            f"Preset: {current_preset}",
-            (self.roi_size[0] - 180, 110),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (200, 200, 200),
-            2,
-            cv2.LINE_AA
+            base_radius = float(getattr(calibration, "r_outer_double_px", 0.0))
+            metrics = getattr(unified_calibration, "metrics", None) if unified_calibration is not None else None
+            ref_radius = float(getattr(metrics, "roi_board_radius", 0.0)) if metrics is not None else 0.0
+            if ref_radius > 1e-6:
+                scale = base_radius / ref_radius
+                scale_delta = abs(scale - 1.0)
+                if scale_delta <= 0.03:
+                    scale_status, scale_subtitle = "good", "ON-SPEC"
+                elif scale_delta <= 0.07:
+                    scale_status, scale_subtitle = "warn", "TUNE"
+                else:
+                    scale_status, scale_subtitle = "bad", "RESCALE"
+                scale_value = f"{scale:.3f}"
+            else:
+                scale_status, scale_subtitle = "info", "NO REF"
+                scale_value = "--"
+            chips.append(
+                {
+                    "label": "Scale",
+                    "value": scale_value,
+                    "status": scale_status,
+                    "subtitle": scale_subtitle,
+                }
+            )
+
+        preset_display = current_preset.replace("_", " ").title()
+        chips.append(
+            {
+                "label": "Preset",
+                "value": preset_display,
+                "status": "info",
+                "subtitle": "DETECTOR",
+            }
         )
 
-        # Auto-align status in ALIGN mode
-        if overlay_mode == OVERLAY_ALIGN:
-            cv2.putText(
+        anchor_x = self.roi_size[0] - 16
+        y = 18
+        for chip in chips:
+            _, height = self._chip_drawer.draw_metric_chip(
                 img,
-                f"auto:{'ON' if align_auto else 'OFF'}",
-                (self.roi_size[0] - 180, 46),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (220, 220, 220),
-                2,
-                cv2.LINE_AA
+                origin=(anchor_x, y),
+                label=chip["label"],
+                value=chip["value"],
+                status=chip["status"],
+                subtitle=chip.get("subtitle"),
+                align="right",
+                compact=True,
             )
+            y += height + 8
 
         return img
 
