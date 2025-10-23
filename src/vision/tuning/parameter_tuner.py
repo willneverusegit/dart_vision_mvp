@@ -113,6 +113,12 @@ class ParameterTuner:
         # Window names
         self.main_window = "Dart Detection Tuner"
         self.controls_window = "Parameters"
+        self.dashboard_window = "Parameter Dashboard"
+
+        # Dashboard state
+        self.last_trackbar_values: Dict[str, int] = {}
+        self.last_changed_param: Optional[str] = None
+        self.param_change_time = 0
 
     def initialize(self) -> bool:
         """
@@ -161,6 +167,13 @@ class ParameterTuner:
 
         # Create trackbars
         self._create_trackbars()
+
+        # Create dashboard window
+        cv2.namedWindow(self.dashboard_window, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.dashboard_window, 600, 800)
+
+        # Initialize trackbar values
+        self._initialize_trackbar_values()
 
         self.logger.info("Initialization complete. Press 'h' for help.")
         return True
@@ -297,6 +310,153 @@ class ParameterTuner:
 
         return motion_cfg, dart_cfg
 
+    def _initialize_trackbar_values(self):
+        """Initialize trackbar values dictionary for change detection"""
+        trackbar_names = [
+            "Motion: Var Thresh", "Motion: Min Pixels", "Motion: Morph Kernel",
+            "Dart: Min Area", "Dart: Max Area", "Dart: Min AR x10", "Dart: Max AR x10",
+            "Dart: Min Solidity x100", "Dart: Max Solidity x100",
+            "Dart: Min Extent x100", "Dart: Max Extent x100",
+            "Dart: Min Edge Dens x100", "Dart: Max Edge Dens x100",
+            "Dart: Convexity x100", "Dart: Convex Gate",
+            "Dart: Confirm Frames", "Dart: Pos Tolerance", "Dart: Cooldown Frames",
+            "Dart: Adaptive", "Dart: Otsu Bias", "Dart: Morph Open", "Dart: Morph Close",
+        ]
+
+        for name in trackbar_names:
+            self.last_trackbar_values[name] = cv2.getTrackbarPos(name, self.controls_window)
+
+    def _detect_changed_parameter(self):
+        """Detect which parameter changed and update highlight"""
+        current_time = cv2.getTickCount() / cv2.getTickFrequency()
+
+        for name, last_val in self.last_trackbar_values.items():
+            current_val = cv2.getTrackbarPos(name, self.controls_window)
+            if current_val != last_val:
+                self.last_changed_param = name
+                self.param_change_time = current_time
+                self.last_trackbar_values[name] = current_val
+                break
+
+        # Clear highlight after 2 seconds
+        if current_time - self.param_change_time > 2.0:
+            self.last_changed_param = None
+
+    def _render_dashboard(self, motion_cfg: MotionConfig, dart_cfg: DartDetectorConfig):
+        """Render parameter dashboard with highlighted changed parameters"""
+        # Create canvas
+        dashboard = np.zeros((800, 600, 3), dtype=np.uint8)
+        dashboard[:] = (30, 30, 30)  # Dark gray background
+
+        y_offset = 30
+        line_height = 25
+        section_gap = 15
+
+        # Colors
+        color_header = (100, 200, 255)  # Orange-ish
+        color_normal = (200, 200, 200)  # Light gray
+        color_highlight = (0, 255, 0)  # Green
+        color_value = (150, 255, 255)  # Yellow
+
+        def draw_header(text, y):
+            cv2.putText(dashboard, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.7, color_header, 2, cv2.LINE_AA)
+            cv2.line(dashboard, (20, y + 5), (580, y + 5), color_header, 1)
+            return y + line_height + 10
+
+        def draw_param(name, value, trackbar_name, y):
+            # Support multiple trackbar names (e.g., for range parameters)
+            if isinstance(trackbar_name, (list, tuple)):
+                is_highlighted = any(self.last_changed_param == tn for tn in trackbar_name)
+            else:
+                is_highlighted = (self.last_changed_param == trackbar_name)
+
+            text_color = color_highlight if is_highlighted else color_normal
+
+            # Draw background highlight
+            if is_highlighted:
+                cv2.rectangle(dashboard, (10, y - 18), (590, y + 5), (0, 80, 0), -1)
+                cv2.rectangle(dashboard, (10, y - 18), (590, y + 5), color_highlight, 2)
+
+            # Draw parameter name
+            cv2.putText(dashboard, f"  {name}:", (20, y), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.55, text_color, 2 if is_highlighted else 1, cv2.LINE_AA)
+
+            # Draw value
+            value_text = str(value)
+            cv2.putText(dashboard, value_text, (430, y), cv2.FONT_HERSHEY_SIMPLEX,
+                       0.55, color_value, 2 if is_highlighted else 1, cv2.LINE_AA)
+
+            return y + line_height
+
+        # Title
+        cv2.putText(dashboard, "PARAMETER DASHBOARD", (20, y_offset),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+        y_offset += 30
+
+        # Motion Detection Section
+        y_offset = draw_header("MOTION DETECTION", y_offset)
+        y_offset = draw_param("Variance Threshold", motion_cfg.var_threshold,
+                             "Motion: Var Thresh", y_offset)
+        y_offset = draw_param("Min Motion Pixels", motion_cfg.motion_pixel_threshold,
+                             "Motion: Min Pixels", y_offset)
+        y_offset = draw_param("Morph Kernel Size", motion_cfg.morph_kernel_size,
+                             "Motion: Morph Kernel", y_offset)
+        y_offset += section_gap
+
+        # Dart Shape Constraints Section
+        y_offset = draw_header("DART SHAPE CONSTRAINTS", y_offset)
+        y_offset = draw_param("Min Area", dart_cfg.min_area, "Dart: Min Area", y_offset)
+        y_offset = draw_param("Max Area", dart_cfg.max_area, "Dart: Max Area", y_offset)
+        y_offset = draw_param("Aspect Ratio",
+                             f"{dart_cfg.min_aspect_ratio:.2f} - {dart_cfg.max_aspect_ratio:.2f}",
+                             ["Dart: Min AR x10", "Dart: Max AR x10"], y_offset)
+        y_offset = draw_param("Solidity",
+                             f"{dart_cfg.min_solidity:.2f} - {dart_cfg.max_solidity:.2f}",
+                             ["Dart: Min Solidity x100", "Dart: Max Solidity x100"], y_offset)
+        y_offset = draw_param("Extent",
+                             f"{dart_cfg.min_extent:.2f} - {dart_cfg.max_extent:.2f}",
+                             ["Dart: Min Extent x100", "Dart: Max Extent x100"], y_offset)
+        y_offset = draw_param("Edge Density",
+                             f"{dart_cfg.min_edge_density:.2f} - {dart_cfg.max_edge_density:.2f}",
+                             ["Dart: Min Edge Dens x100", "Dart: Max Edge Dens x100"], y_offset)
+        y_offset += section_gap
+
+        # Convexity Gate Section
+        y_offset = draw_header("CONVEXITY GATE", y_offset)
+        y_offset = draw_param("Enabled", "YES" if dart_cfg.convexity_gate_enabled else "NO",
+                             "Dart: Convex Gate", y_offset)
+        y_offset = draw_param("Min Convexity Ratio", f"{dart_cfg.convexity_min_ratio:.2f}",
+                             "Dart: Convexity x100", y_offset)
+        y_offset += section_gap
+
+        # Temporal Tracking Section
+        y_offset = draw_header("TEMPORAL TRACKING", y_offset)
+        y_offset = draw_param("Confirmation Frames", dart_cfg.confirmation_frames,
+                             "Dart: Confirm Frames", y_offset)
+        y_offset = draw_param("Position Tolerance", f"{dart_cfg.position_tolerance_px}px",
+                             "Dart: Pos Tolerance", y_offset)
+        y_offset = draw_param("Cooldown Frames", dart_cfg.cooldown_frames,
+                             "Dart: Cooldown Frames", y_offset)
+        y_offset += section_gap
+
+        # Preprocessing Section
+        y_offset = draw_header("PREPROCESSING", y_offset)
+        y_offset = draw_param("Adaptive Threshold", "YES" if dart_cfg.motion_adaptive else "NO",
+                             "Dart: Adaptive", y_offset)
+        y_offset = draw_param("Otsu Bias", dart_cfg.motion_otsu_bias,
+                             "Dart: Otsu Bias", y_offset)
+        y_offset = draw_param("Morph Open Kernel", dart_cfg.morph_open_ksize,
+                             "Dart: Morph Open", y_offset)
+        y_offset = draw_param("Morph Close Kernel", dart_cfg.morph_close_ksize,
+                             "Dart: Morph Close", y_offset)
+
+        # Footer hint
+        cv2.putText(dashboard, "Adjust trackbars to change parameters",
+                   (20, 780), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1, cv2.LINE_AA)
+
+        cv2.imshow(self.dashboard_window, dashboard)
+
     def run(self):
         """Main tuning loop"""
         if not self.initialize():
@@ -336,8 +496,14 @@ class ParameterTuner:
             # Store frame for pause mode
             self._last_frame = frame.copy()
 
+            # Detect changed parameters for highlighting
+            self._detect_changed_parameter()
+
             # Read trackbar values
             motion_cfg, dart_cfg = self._read_trackbar_values()
+
+            # Render parameter dashboard
+            self._render_dashboard(motion_cfg, dart_cfg)
 
             # Update detector configs
             self.motion_detector.config = motion_cfg
@@ -425,17 +591,25 @@ class ParameterTuner:
         h - Show this help
         q - Quit
 
-        Trackbars:
-        - Use trackbars to adjust parameters in real-time
-        - Changes take effect immediately
-        - Compare different presets with Preset trackbar
+        Windows:
+        - Main Window: Live detection visualization
+        - Parameters: Trackbars for all settings
+        - Dashboard: Clear parameter display with highlighting
+
+        Dashboard Features:
+        - Grouped parameters by category
+        - Highlighted parameters (green) show recent changes
+        - Large, readable text
+        - Real-time value updates
 
         Tips:
         1. Start with a preset (aggressive/balanced/stable)
-        2. Adjust motion detection first (threshold, min pixels)
-        3. Fine-tune dart detection shape constraints
-        4. Use debug overlays to understand what's detected
-        5. Save working configurations as presets
+        2. Watch the Parameter Dashboard while adjusting trackbars
+        3. Changed parameters highlight in green for 2 seconds
+        4. Adjust motion detection first (threshold, min pixels)
+        5. Fine-tune dart detection shape constraints
+        6. Use debug overlays to understand what's detected
+        7. Save working configurations as presets
         """
         self.logger.info(help_text)
         print(help_text)
