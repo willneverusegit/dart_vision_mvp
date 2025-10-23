@@ -26,9 +26,14 @@ from src.vision.dart_impact_detector import apply_detector_preset
 
 # Board mapping/overlays/config
 from src.board import BoardConfig, BoardMapper, Calibration, draw_ring_circles, draw_sector_labels
+from src.board.hough_circle import HoughCircleAligner
 from src.overlay.heatmap import HeatmapAccumulator
 from src.analytics.polar_heatmap import PolarHeatmap
 from src.analytics.stats_accumulator import StatsAccumulator
+
+# UI Components
+from src.ui import HUDRenderer, OverlayRenderer
+from src.ui.overlay_renderer import OVERLAY_MIN, OVERLAY_RINGS, OVERLAY_FULL, OVERLAY_ALIGN
 
 
 # --- Project modules (kept) ---
@@ -96,12 +101,6 @@ logger = logging.getLogger("main")
 
 
 # ---------- Small helpers ----------
-# Overlay-Modi
-OVERLAY_MIN   = 0  # nur Treffer & Game-HUD (präsentationstauglich)
-OVERLAY_RINGS = 1  # Ringe + ROI-Kreis
-OVERLAY_FULL  = 2  # Voll: Ringe + Sektoren + technische HUDs
-OVERLAY_ALIGN = 3   # NEU: Ausrichtmodus
-
 # Extended key codes (work with cv2.waitKeyEx on Windows)
 VK_LEFT  = 0x250000
 VK_UP    = 0x260000
@@ -169,10 +168,14 @@ class DartVisionApp:
         self.show_mask = False  # per Hotkey toggeln
         self.show_mask_debug = False
 
-        # HUD buffers (Glättung)
-        self._hud_b = deque(maxlen=15)  # Brightness
-        self._hud_f = deque(maxlen=15)  # Focus (Laplacian Var)
-        self._hud_e = deque(maxlen=15)  # Edge density %
+        # UI Components (refactored)
+        self.hud_renderer = HUDRenderer(smoothing_window=15)
+        self.overlay_renderer = OverlayRenderer(
+            roi_size=ROI_SIZE,
+            main_size=(800, 600),
+            canvas_size=(1200, 600)
+        )
+        self.hough_aligner: Optional[HoughCircleAligner] = None  # initialized after board_cfg
 
         # Mapping/Scoring
         self.board_cfg: Optional[BoardConfig] = None
@@ -202,6 +205,7 @@ class DartVisionApp:
         # Mini-Game
         self.game = DemoGame(mode=self.args.game if hasattr(self.args, "game") else GameMode.ATC)
         self.last_msg = ""  # HUD-Zeile für letzten Wurf
+        self.current_preset = "balanced"  # Track current detector preset
 
         # --- Heatmap / Polar-Heatmap state ---
         self.hm = None  # HeatmapAccumulator
@@ -356,103 +360,9 @@ class DartVisionApp:
         except Exception:
             print(f"[INFO] Calibration saved → {path}")
 
-    def _ratio_consistent(self, circles, r_out: float) -> bool:
-        """Prüft, ob innere Ringe im erwarteten Verhältnis zu r_out auftauchen."""
-        if self.board_cfg is None or r_out <= 0:
-            return True
-        target = {
-            "D_in": self.board_cfg.radii.r_double_inner,  # ~0.9
-            "T_out": self.board_cfg.radii.r_triple_outer,  # ~0.55
-            "T_in": self.board_cfg.radii.r_triple_inner,  # ~0.45
-        }
-        rs = np.array([float(c[2]) for c in circles if float(c[2]) < r_out], dtype=float)
-        if rs.size == 0:
-            return False
-        ratios = rs / r_out
-        ok = 0
-        for r in target.values():
-            if np.min(np.abs(ratios - float(r))) < 0.1:  # 3% Toleranz
-                ok += 1
-        return ok >= 2  # mindestens zwei „Treffer“
+    # _ratio_consistent removed - now in HoughCircleAligner
 
-    # LEGACY / DEBUG ONLY — replaced by _hough_refine_rings()
-    def _hough_refine_center(self, roi_bgr) -> bool:
-        """
-        Findet den äußeren Doppelring als Kreis und passt Overlay-Center & Scale an.
-        Verwendet aktuelles Overlay-Center/-Radius als Referenz, sanfte Gains, Robustheit.
-        """
-        if roi_bgr is None:
-            return False
-
-        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-        if getattr(self.args, "clahe", False):
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray = clahe.apply(gray)
-        gray = cv2.medianBlur(gray, 5)
-
-        # Erwartung aus aktuellem Overlay-Zustand
-        cx_cur = float(ROI_CENTER[0] + self.overlay_center_dx)
-        cy_cur = float(ROI_CENTER[1] + self.overlay_center_dy)
-        r_cur = float(self.roi_board_radius) * float(self.overlay_scale)
-
-        # Hough-Radiusfenster um den aktuellen Sollradius
-        r_min = int(max(10, 0.88 * r_cur))
-        r_max = int(min(ROI_SIZE[0], 1.12 * r_cur))
-
-        # Hough
-        circles = cv2.HoughCircles(
-            gray, cv2.HOUGH_GRADIENT,
-            dp=1.2, minDist=100,
-            param1=120, param2=40,
-            minRadius=r_min, maxRadius=r_max
-        )
-        if circles is None or len(circles) == 0:
-            self.last_msg = "Hough: no circle"
-            return False
-
-        cs = np.round(circles[0, :]).astype(int)
-
-        # Nimm den Kreis, der (a) am nächsten am r_cur liegt und (b) dem erwarteten Center nahe ist
-        def score(c):
-            cx, cy, r = c
-            dr = abs(r - r_cur)
-            dc = abs(cx - cx_cur) + abs(cy - cy_cur)
-            return (dr, dc)
-
-        cs = sorted(cs, key=score)
-        cx, cy, r = [int(v) for v in cs[0]]
-
-        # Abweichungen
-        dx_meas = float(cx) - cx_cur
-        dy_meas = float(cy) - cy_cur
-        sr_meas = float(r) / max(r_cur, 1e-6)
-
-        # Sanfte Gains (keine Sprünge)
-        k_center = 0.35  # 0..1  (Center-Anteil je Update)
-        k_scale = 0.30  # 0..1  (Scale-Anteil je Update)
-
-        # Nur anwenden, wenn plausibel
-        # (Kleinere Schwellwerte = empfindlicher; größere = stabiler)
-        if (abs(dx_meas) > ROI_SIZE[0] * 0.4) or (abs(dy_meas) > ROI_SIZE[1] * 0.4):
-            self.last_msg = "Hough: center jump too large → ignore"
-            return False
-        if not (0.85 <= sr_meas <= 1.15):
-            self.last_msg = "Hough: radius jump too large → ignore"
-            return False
-
-        # Update (gegen aktuelles SOLL, nicht ROI_CENTER!)
-        self.overlay_center_dx += k_center * dx_meas
-        self.overlay_center_dy += k_center * dy_meas
-        self.overlay_scale *= (1.0 + k_scale * (sr_meas - 1.0))
-
-        # Werte direkt in Mapper schieben, wenn vorhanden
-        if self.board_mapper is not None:
-            self.board_mapper.calib.cx = float(ROI_CENTER[0] + self.overlay_center_dx)
-            self.board_mapper.calib.cy = float(ROI_CENTER[1] + self.overlay_center_dy)
-            self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(self.overlay_scale)
-
-        self.last_msg = f"Hough OK: d=({dx_meas:+.1f},{dy_meas:+.1f}) r={r} → cx={self.board_mapper.calib.cx:.1f}, cy={self.board_mapper.calib.cy:.1f}, s={self.overlay_scale:.4f}"
-        return True
+    # _hough_refine_center removed - now in HoughCircleAligner
 
     def _hough_refine_rings(self, roi_bgr: np.ndarray) -> tuple[float, float, float] | None:
         """
@@ -626,35 +536,7 @@ class DartVisionApp:
 
         return float(delta_deg), kappa
 
-    def _hud_compute(self, gray: np.ndarray):
-        # Helligkeit, Fokus-Proxy (Laplacian-Var), Kantenanteil in %
-        b = float(np.mean(gray))
-        f = float(cv2.Laplacian(gray, cv2.CV_64F).var())
-        edges = cv2.Canny(gray, 80, 160)
-        e = 100.0 * float(np.mean(edges > 0))
-        # Glättung
-        self._hud_b.append(b);
-        self._hud_f.append(f);
-        self._hud_e.append(e)
-        b_ = float(np.mean(self._hud_b));
-        f_ = float(np.mean(self._hud_f));
-        e_ = float(np.mean(self._hud_e))
-        return b_, f_, e_
-
-    def _hud_color(self, b: float, f: float, e: float, charuco_corners: int = 0):
-        # Zielkorridore (kannst du später anpassen)
-        ok_b = 120.0 <= b <= 170.0
-        ok_f = f >= 800.0
-        ok_e = 3.5 <= e <= 15.0
-        ok_c = (charuco_corners >= 8)  # nur in Kalibrier-UI relevant
-        ok = ok_b and ok_f and ok_e and ok_c
-        return (0, 255, 0) if ok else (0, 200, 200)
-
-    def _hud_draw(self, img, lines, color=(0, 255, 0), org=(12, 24)):
-        x, y = org
-        for ln in lines:
-            cv2.putText(img, ln, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2, cv2.LINE_AA)
-            y += 22
+    # HUD methods removed - now handled by HUDRenderer
 
     def _overlay_center_radius(self):
         """Gibt (cx, cy, r_base) zurück: Center inkl. Offsets + skalierten Doppel-Außenradius."""
@@ -681,30 +563,7 @@ class DartVisionApp:
         except Exception:
             return 0
 
-    def _draw_traffic_light(self, img, b, f, e, org=(12, 105)):
-        def st_b(v): return 'G' if 130 <= v <= 160 else ('Y' if 120 <= v <= 170 else 'R')
-
-        def st_f(v): return 'G' if v >= 1500 else ('Y' if v >= 800 else 'R')
-
-        def st_e(v): return 'G' if 5.0 <= v <= 10.0 else ('Y' if 3.5 <= v <= 15.0 else 'R')
-
-        col = {'R': (36, 36, 255), 'Y': (0, 255, 255), 'G': (0, 200, 0)}
-        states = [("B", st_b(b)), ("F", st_f(f)), ("E", st_e(e))]
-        x, y = org;
-        w, h, pad = 18, 18, 8
-        cv2.putText(img, "Status:", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-        for i, (label, st) in enumerate(states):
-            p1 = (x + i * (w + pad), y);
-            p2 = (p1[0] + w, p1[1] + h)
-            cv2.rectangle(img, p1, p2, col[st], -1);
-            cv2.rectangle(img, p1, p2, (20, 20, 20), 1)
-            cv2.putText(img, label, (p1[0], p2[1] + 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
-        st_vals = [s for _, s in states]
-        s_all = 'G' if all(s == 'G' for s in st_vals) else ('R' if 'R' in st_vals else 'Y')
-        X = x + 3 * (w + pad) + 20
-        cv2.putText(img, "ALL", (X, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2, cv2.LINE_AA)
-        cv2.rectangle(img, (X, y), (X + w, y + h), col[s_all], -1)
-        cv2.rectangle(img, (X, y), (X + w, y + h), (20, 20, 20), 1)
+    # _draw_traffic_light removed - now handled by HUDRenderer
 
     def _sync_mapper(self):
         if self.board_mapper:
@@ -781,56 +640,7 @@ class DartVisionApp:
         self.roi.set_homography_from_matrix(Heff)
         self._roi_adjust_dirty = False
 
-    def _draw_help_overlay(self, img):
-        """
-        Zeichnet ein kompaktes Hilfe-Overlay unten rechts ins ROI-Bild (img).
-        Nutzt lokales ROI-Blending – sicher & unabhängig vom Backend.
-        """
-        pad = 10
-        lines = [
-            "Help / Controls",
-            "1/2/3: Preset Agg/Bal/Stable",
-            "o: Overlay (MIN/RINGS/FULL/ALIGN)",
-            "t: Hough once   z: Auto-Hough",
-            "Arrows: rot/scale overlay",
-            "X: Save overlay offsets",
-            "c: Recalibrate   s: Screenshot",
-            "g: Game reset    h: Switch game",
-            "?: Toggle help",
-        ]
-
-        # Kastenmaße
-        w = 310
-        h = 22 * len(lines) + 2 * pad
-        H, W = img.shape[:2]
-        x = max(0, W - w - pad)
-        y = max(0, H - h - pad)
-
-        # ROI ausschneiden
-        roi = img[y:y + h, x:x + w]
-        if roi.size == 0:
-            return  # falls zu knapp
-
-        # halbtransparenten Hintergrund vorbereiten
-        bg = roi.copy()
-        cv2.rectangle(bg, (0, 0), (w, h), (20, 20, 20), -1)
-
-        # Alpha-Blending NUR in diesem Kasten (kein Inplace-Parameter)
-        blended = cv2.addWeighted(bg, 0.6, roi, 0.4, 0.0)
-        roi[:] = blended  # zurückschreiben
-
-        # Text auf das (nun) eingefärbte ROI zeichnen
-        ytxt = pad + 18
-        cv2.putText(roi, lines[0], (pad, ytxt),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        ytxt += 10
-        for ln in lines[1:]:
-            ytxt += 18
-            cv2.putText(roi, ln, (pad, ytxt),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (230, 230, 230), 1, cv2.LINE_AA)
-
-        # DEBUG: sichtbar machen, falls Text unsichtbar wäre
-        # cv2.rectangle(roi, (0,0), (w-1,h-1), (0,0,255), 1)
+    # _draw_help_overlay removed - now handled by HUDRenderer
     # ----- Setup -----
     def setup(self) -> bool:
         logger.info("=" * 60)
