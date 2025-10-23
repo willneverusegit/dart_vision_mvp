@@ -117,21 +117,28 @@ def create_visualization_refactored(
     # ===== IMPACT MARKERS =====
     disp_roi = overlay_renderer.render_impact_markers(disp_roi, dart_detector)
 
-    # ===== GAME HUD =====
-    disp_roi = overlay_renderer.render_game_hud(disp_roi, game, last_msg)
+    fps_stats = None
+    dart_config = None
+    if show_debug and fps_counter is not None:
+        stats_obj = fps_counter.get_stats()
+        fps_stats = {
+            'fps_median': stats_obj.fps_median,
+            'frame_time_ms': stats_obj.frame_time_ms
+        }
+    if show_debug and dart_detector is not None:
+        dart_config = dart_detector.config
 
-    # ===== DEBUG HUD =====
-    if show_debug:
-        fps_stats = None
-        if fps_counter is not None:
-            stats_obj = fps_counter.get_stats()
-            fps_stats = {
-                'fps_median': stats_obj.fps_median,
-                'frame_time_ms': stats_obj.frame_time_ms
-            }
-
-        dart_config = dart_detector.config if dart_detector is not None else None
-        disp_roi = overlay_renderer.render_debug_hud(disp_roi, fps_stats, total_darts, dart_config)
+    # ===== GAME & DEBUG CARDS =====
+    disp_roi = overlay_renderer.render_info_cards(
+        disp_roi,
+        game,
+        last_msg,
+        show_debug=show_debug,
+        fps_stats=fps_stats,
+        total_darts=total_darts,
+        dart_config=dart_config,
+        current_preset=current_preset,
+    )
 
     # ===== OVERLAY STATUS =====
     disp_roi = overlay_renderer.render_overlay_status(

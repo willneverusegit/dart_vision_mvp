@@ -14,7 +14,7 @@ import numpy as np
 from typing import Optional, Tuple, List, TYPE_CHECKING
 from pathlib import Path
 
-from .typography import Typography, ChipDrawer
+from .typography import Typography, ChipDrawer, CardDrawer
 from .hud_metrics import build_metric_chips, summarise_quality
 
 if TYPE_CHECKING:
@@ -69,6 +69,7 @@ class OverlayRenderer:
         self._canvas_background = self._build_canvas_background()
         self._typography = Typography()
         self._chip_drawer = ChipDrawer(self._typography)
+        self._card_drawer = CardDrawer(self._typography)
 
     def _build_canvas_background(self) -> np.ndarray:
         """Precompute the gradient canvas with glass panels."""
@@ -375,136 +376,191 @@ class OverlayRenderer:
 
         return img
 
-    def render_game_hud(
+    def render_info_cards(
         self,
         img: np.ndarray,
         game: 'DemoGame',
-        last_msg: str = ""
-    ) -> np.ndarray:
-        """
-        Render game HUD (bottom-left of ROI).
-
-        Args:
-            img: Image to draw on
-            game: Game instance
-            last_msg: Last throw message
-
-        Returns:
-            Image with game HUD
-        """
-        from src.game.game import GameMode
-
-        y0 = self.roi_size[1] - 60
-
-        # Game mode
-        mode_txt = "ATC" if game.mode == GameMode.ATC else "301"
-        cv2.putText(
-            img,
-            f"Game: {mode_txt}",
-            (10, y0),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA
-        )
-        y0 += 28
-
-        # Game status
-        if game.mode == GameMode.ATC:
-            status_txt = "FINISH" if game.done else f"Target: {game.target}"
-        else:
-            status_txt = "FINISH" if game.done else f"Score: {game.score}"
-
-        cv2.putText(
-            img,
-            status_txt,
-            (10, y0),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.7,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA
-        )
-
-        # Last throw message
-        if last_msg:
-            cv2.putText(
-                img,
-                last_msg,
-                (10, self.roi_size[1] - 5),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 220, 220),
-                2,
-                cv2.LINE_AA
-            )
-
-        return img
-
-    def render_debug_hud(
-        self,
-        img: np.ndarray,
+        last_msg: str = "",
+        show_debug: bool = False,
         fps_stats: Optional[dict] = None,
         total_darts: int = 0,
-        dart_config: Optional[object] = None
+        dart_config: Optional[object] = None,
+        current_preset: str = "balanced",
     ) -> np.ndarray:
-        """
-        Render debug information.
+        """Render stacked cards summarising game and system state."""
 
-        Args:
-            img: Image to draw on
-            fps_stats: FPS statistics dict
-            total_darts: Total darts detected
-            dart_config: Dart detector config for motion tuning display
+        from src.game.game import GameMode
 
-        Returns:
-            Image with debug HUD
-        """
+        if self.roi_size[0] <= 0 or self.roi_size[1] <= 0:
+            return img
+
+        pad = 20
+        gap = 16
+        bottom_margin = 18
+        available_width = self.roi_size[0] - pad * 2
+        if available_width <= 0:
+            return img
+
+        draw_debug = bool(show_debug)
+        if draw_debug:
+            paired_width = available_width - gap
+            if paired_width <= 0:
+                draw_debug = False
+                game_width = max(available_width, 120)
+            else:
+                shared_width = max(int(paired_width // 2), 120)
+                game_width = shared_width
+        else:
+            game_width = max(available_width, 120)
+
+        mode_display = "Around the Clock" if game.mode == GameMode.ATC else "301"
+        game_rows: List[dict] = [
+            {"label": "Mode", "value": mode_display, "status": "accent"}
+        ]
+
+        if game.mode == GameMode.ATC:
+            target = getattr(game, "target", None)
+            if getattr(game, "done", False):
+                objective_value = "Finished run"
+                objective_status = "good"
+            else:
+                objective_value = f"Next: {target}" if target is not None else "Next: --"
+                objective_status = "accent"
+        else:
+            score = getattr(game, "score", None)
+            if getattr(game, "done", False):
+                objective_value = "Checkout"
+                objective_status = "good"
+            else:
+                objective_value = f"{score} left" if score is not None else "--"
+                if score is not None and score <= 100:
+                    objective_status = "warn"
+                else:
+                    objective_status = "accent"
+
+        game_rows.append(
+            {
+                "label": "Objective",
+                "value": objective_value,
+                "status": objective_status,
+            }
+        )
+
+        last_label = ""
+        last_points = 0
+        if hasattr(game, "last") and game.last is not None:
+            last_label = getattr(game.last, "label", "") or ""
+            last_points = int(getattr(game.last, "points", 0) or 0)
+
+        if last_label:
+            last_value = f"{last_label} ({last_points})" if last_points else last_label
+        else:
+            last_value = "Waiting for hit"
+
+        last_hint: Optional[str] = None
+        if last_points and last_label:
+            last_hint = f"{last_points} pts"
+        elif not draw_debug and total_darts:
+            last_hint = f"{total_darts} impacts tracked"
+
+        game_rows.append(
+            {
+                "label": "Last hit",
+                "value": last_value,
+                "status": "info",
+                "hint": last_hint,
+            }
+        )
+
+        footer_text = last_msg if last_msg else "Goal: reliable hit detection & scoring."
+        game_card = self._card_drawer.prepare_card(game_width, "Game State", game_rows, footer=footer_text)
+
+        base_line = self.roi_size[1] - bottom_margin
+        game_y = max(int(base_line - game_card["height"]), 0)
+        self._card_drawer.draw_card(img, (pad, game_y), game_card, status="accent")
+
+        if not draw_debug:
+            return img
+
+        fps_value = None
+        frame_time = None
         if fps_stats is not None:
-            cv2.putText(
-                img,
-                f"FPS: {fps_stats.get('fps_median', 0):.1f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-            cv2.putText(
-                img,
-                f"Time: {fps_stats.get('frame_time_ms', 0):.1f}ms",
-                (10, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 0),
-                2
-            )
-            cv2.putText(
-                img,
-                f"Darts: {total_darts}",
-                (10, 90),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 255),
-                2
+            fps_value = fps_stats.get("fps_median")
+            frame_time = fps_stats.get("frame_time_ms")
+
+        fps_status = "info"
+        fps_progress: Optional[float] = None
+        if isinstance(fps_value, (int, float)):
+            fps_value = float(fps_value)
+            fps_progress = max(0.0, min(1.0, fps_value / 30.0))
+            if fps_value >= 28.0:
+                fps_status = "good"
+            elif fps_value >= 22.0:
+                fps_status = "warn"
+            else:
+                fps_status = "bad"
+
+        frame_status = "info"
+        if isinstance(frame_time, (int, float)):
+            frame_time = float(frame_time)
+            if frame_time <= 35.0:
+                frame_status = "good"
+            elif frame_time <= 45.0:
+                frame_status = "warn"
+            else:
+                frame_status = "bad"
+
+        debug_rows: List[dict] = [
+            {
+                "label": "Median FPS",
+                "value": f"{fps_value:.1f}" if isinstance(fps_value, float) else "--",
+                "status": fps_status,
+                "progress": fps_progress,
+                "hint": "≥30 keeps hits stable" if fps_progress is not None else None,
+            },
+            {
+                "label": "Frame time",
+                "value": f"{frame_time:.1f} ms" if isinstance(frame_time, float) else "--",
+                "status": frame_status,
+            },
+            {
+                "label": "Impacts logged",
+                "value": str(int(total_darts)),
+                "status": "info",
+                "hint": "Session total" if total_darts else None,
+            },
+        ]
+
+        if dart_config is not None:
+            motion_parts: List[str] = []
+            bias = getattr(dart_config, "motion_otsu_bias", None)
+            if isinstance(bias, (int, float)):
+                motion_parts.append(f"bias {int(round(bias)):+d}")
+            open_k = getattr(dart_config, "morph_open_ksize", None)
+            if isinstance(open_k, (int, float)):
+                motion_parts.append(f"open {int(round(open_k))}")
+            close_k = getattr(dart_config, "morph_close_ksize", None)
+            if isinstance(close_k, (int, float)):
+                motion_parts.append(f"close {int(round(close_k))}")
+            min_white = getattr(dart_config, "motion_min_white_frac", None)
+            if isinstance(min_white, (int, float)):
+                motion_parts.append(f"white {min_white * 100:.0f}%")
+            motion_summary = " | ".join(motion_parts) if motion_parts else "default"
+            debug_rows.append(
+                {
+                    "label": "Motion tuning",
+                    "value": motion_summary,
+                    "status": "info",
+                }
             )
 
-        # Motion tuning parameters
-        if dart_config is not None:
-            cv2.putText(
-                img,
-                f"MotionTune  bias:{int(getattr(dart_config, 'motion_otsu_bias', 0)):+d}  "
-                f"open:{int(getattr(dart_config, 'morph_open_ksize', 3))}  "
-                f"close:{int(getattr(dart_config, 'morph_close_ksize', 5))}  "
-                f"minWhite:{getattr(dart_config, 'motion_min_white_frac', 0.02) * 100:.1f}%",
-                (10, self.roi_size[1] - 10),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (220, 220, 220),
-                1,
-                cv2.LINE_AA
-            )
+        preset_display = current_preset.replace("_", " ").title()
+        debug_footer = f"Preset: {preset_display}"
+
+        debug_card = self._card_drawer.prepare_card(game_width, "System Health", debug_rows, footer=debug_footer)
+        debug_y = max(int(base_line - debug_card["height"]), 0)
+        debug_x = pad + game_width + gap
+        self._card_drawer.draw_card(img, (debug_x, debug_y), debug_card, status=fps_status)
 
         return img
 

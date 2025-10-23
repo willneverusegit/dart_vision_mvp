@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 
 try:  # Optional FreeType support (opencv-contrib)
     import cv2.freetype as cv2_freetype  # type: ignore
@@ -133,6 +133,11 @@ class ChipDrawer:
     def __init__(self, typography: Typography) -> None:
         self._typography = typography
 
+    @classmethod
+    def get_palette(cls, status: str) -> Dict[str, Tuple[int, int, int]]:
+        """Return a color palette for the given status."""
+        return cls._STATUS_PALETTE.get(status, cls._STATUS_PALETTE["info"])
+
     def draw_metric_chip(
         self,
         canvas: np.ndarray,
@@ -146,7 +151,7 @@ class ChipDrawer:
         alpha: float = 0.82,
     ) -> Tuple[int, int]:
         """Draw a multi-line chip and return its (width, height)."""
-        palette = self._STATUS_PALETTE.get(status, self._STATUS_PALETTE["info"])
+        palette = self.get_palette(status)
 
         if compact:
             pad_x = 14
@@ -235,7 +240,7 @@ class ChipDrawer:
         alpha: float = 0.78,
     ) -> Tuple[int, int]:
         """Draw a single-line pill chip."""
-        palette = self._STATUS_PALETTE.get(status, self._STATUS_PALETTE["info"])
+        palette = self.get_palette(status)
         pad_x = 14
         pad_y = 8
         text_height = 24
@@ -322,3 +327,326 @@ class ChipDrawer:
         cv2.ellipse(canvas, (x2 - radius - 1, y1 + radius), (radius, radius), 270, 0, 90, color, thickness, cv2.LINE_AA)
         cv2.ellipse(canvas, (x1 + radius, y2 - radius - 1), (radius, radius), 90, 0, 90, color, thickness, cv2.LINE_AA)
         cv2.ellipse(canvas, (x2 - radius - 1, y2 - radius - 1), (radius, radius), 0, 0, 90, color, thickness, cv2.LINE_AA)
+
+
+class CardDrawer:
+    """Render stacked information cards with consistent styling."""
+
+    _BASE_FILL = (46, 48, 84)
+    _BASE_BORDER = (88, 96, 146)
+    _BASE_TITLE = (236, 238, 252)
+    _BASE_LABEL = (204, 210, 232)
+    _BASE_VALUE = (248, 250, 255)
+    _BASE_HINT = (198, 204, 226)
+    _BASE_FOOTER = (206, 210, 234)
+    _BASE_ACCENT = (132, 168, 236)
+    _BASE_PROGRESS_BG = (58, 60, 92)
+
+    def __init__(self, typography: Typography) -> None:
+        self._typography = typography
+        self._pad_x = 18
+        self._pad_top = 18
+        self._pad_bottom = 18
+        self._row_gap = 14
+        self._label_value_gap = 4
+        self._progress_height = 8
+        self._progress_gap = 12
+        self._title_height = 24
+        self._label_height = 16
+        self._value_height = 28
+        self._footer_height = 16
+
+    def prepare_card(
+        self,
+        width: int,
+        title: str,
+        rows: List[Dict[str, Any]],
+        footer: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Pre-compute layout metrics for a card."""
+        width = max(int(width), 96)
+        content = self._prepare_content(width, title, rows, footer)
+        content["width"] = width
+        content["height"] = self._compute_height(content)
+        return content
+
+    def draw_card(
+        self,
+        canvas: np.ndarray,
+        origin: Tuple[int, int],
+        card: Dict[str, Any],
+        status: str = "info",
+        align: str = "left",
+        alpha: float = 0.82,
+    ) -> Tuple[int, int]:
+        """Draw a prepared card and return its size."""
+        width = int(card.get("width", 0))
+        height = int(card.get("height", 0))
+        if width <= 0 or height <= 0:
+            return width, height
+
+        if align == "right":
+            x1 = int(origin[0] - width)
+        else:
+            x1 = int(origin[0])
+        y1 = int(origin[1])
+        x2 = x1 + width
+        y2 = y1 + height
+
+        if x2 <= 0 or y2 <= 0 or x1 >= canvas.shape[1] or y1 >= canvas.shape[0]:
+            return width, height
+
+        style = self._resolve_style(status)
+
+        ChipDrawer._rounded_rect(canvas, (x1, y1, x2, y2), 18, style["fill"], alpha)
+        ChipDrawer._rounded_rect_outline(canvas, (x1, y1, x2, y2), 18, style["border"], 1)
+        cv2.line(canvas, (x1 + 20, y1 + 10), (x2 - 20, y1 + 10), style["accent"], 2, cv2.LINE_AA)
+
+        text_x = x1 + self._pad_x
+        cursor_y = y1 + self._pad_top
+
+        title_block = card.get("title")
+        if title_block is not None:
+            _, txt_h, txt_base = title_block["metrics"]
+            baseline = cursor_y + txt_h
+            self._typography.draw(canvas, title_block["text"], (text_x, baseline), self._title_height, style["title"])
+            cursor_y = baseline + txt_base + self._row_gap
+
+        rows = card.get("rows", [])
+        for idx, row in enumerate(rows):
+            label_block = row.get("label")
+            if label_block is not None:
+                _, lbl_h, lbl_base = label_block["metrics"]
+                baseline = cursor_y + lbl_h
+                self._typography.draw(
+                    canvas,
+                    label_block["text"],
+                    (text_x, baseline),
+                    self._label_height,
+                    style["label"],
+                )
+                cursor_y = baseline + lbl_base + self._label_value_gap
+
+            value_block = row.get("value")
+            value_palette = ChipDrawer.get_palette(row.get("status", "info"))
+            value_color = self._mix_color(style["value"], value_palette.get("text_primary", style["value"]), 0.45)
+            _, val_h, val_base = value_block["metrics"]
+            baseline = cursor_y + val_h
+            self._typography.draw(
+                canvas,
+                value_block["text"],
+                (text_x, baseline),
+                self._value_height,
+                value_color,
+            )
+            cursor_y = baseline + val_base
+
+            progress = row.get("progress")
+            if progress is not None:
+                bar_x1 = text_x
+                bar_x2 = x2 - self._pad_x
+                bar_y1 = cursor_y + 6
+                bar_y2 = bar_y1 + self._progress_height
+                cv2.rectangle(canvas, (bar_x1, bar_y1), (bar_x2, bar_y2), style["progress_bg"], -1, cv2.LINE_AA)
+                progress_width = int((bar_x2 - bar_x1) * progress)
+                if progress_width > 0:
+                    cv2.rectangle(
+                        canvas,
+                        (bar_x1, bar_y1),
+                        (bar_x1 + progress_width, bar_y2),
+                        style["progress_fg"],
+                        -1,
+                        cv2.LINE_AA,
+                    )
+                cv2.rectangle(canvas, (bar_x1, bar_y1), (bar_x2, bar_y2), style["progress_border"], 1, cv2.LINE_AA)
+                cursor_y = bar_y2 + self._progress_gap
+
+            hint_block = row.get("hint")
+            if hint_block is not None:
+                _, hint_h, hint_base = hint_block["metrics"]
+                baseline = cursor_y + hint_h
+                self._typography.draw(
+                    canvas,
+                    hint_block["text"],
+                    (text_x, baseline),
+                    self._label_height,
+                    style["hint"],
+                )
+                cursor_y = baseline + hint_base
+
+            if idx != len(rows) - 1 or card.get("footer") is not None:
+                cursor_y += self._row_gap
+
+        footer_block = card.get("footer")
+        if footer_block is not None:
+            _, foot_h, foot_base = footer_block["metrics"]
+            baseline = cursor_y + foot_h
+            self._typography.draw(canvas, footer_block["text"], (text_x, baseline), self._footer_height, style["footer"])
+
+        return width, height
+
+    def _prepare_content(
+        self,
+        width: int,
+        title: str,
+        rows: List[Dict[str, Any]],
+        footer: Optional[str],
+    ) -> Dict[str, Any]:
+        max_text_width = max(width - 2 * self._pad_x, 48)
+
+        title_block = None
+        if title:
+            title_text = self._ellipsize(title.upper(), max_text_width, self._title_height)
+            title_block = {
+                "text": title_text,
+                "metrics": self._typography.measure(title_text, self._title_height),
+            }
+
+        prepared_rows: List[Dict[str, Any]] = []
+        for row in rows:
+            label_block = None
+            label_text = row.get("label", "")
+            if label_text:
+                label_text = self._ellipsize(label_text.upper(), max_text_width, self._label_height)
+                label_block = {
+                    "text": label_text,
+                    "metrics": self._typography.measure(label_text, self._label_height),
+                }
+
+            value_text = self._ellipsize(str(row.get("value", "")), max_text_width, self._value_height)
+            value_block = {
+                "text": value_text,
+                "metrics": self._typography.measure(value_text, self._value_height),
+            }
+
+            hint_block = None
+            hint_text = row.get("hint")
+            if hint_text:
+                hint_text = self._ellipsize(str(hint_text), max_text_width, self._label_height)
+                hint_block = {
+                    "text": hint_text,
+                    "metrics": self._typography.measure(hint_text, self._label_height),
+                }
+
+            progress = row.get("progress")
+            if progress is not None:
+                try:
+                    progress_val = float(progress)
+                except (TypeError, ValueError):
+                    progress_val = 0.0
+                progress = max(0.0, min(1.0, progress_val))
+
+            prepared_rows.append(
+                {
+                    "label": label_block,
+                    "value": value_block,
+                    "hint": hint_block,
+                    "status": row.get("status", "info"),
+                    "progress": progress,
+                }
+            )
+
+        footer_block = None
+        if footer:
+            footer_text = self._ellipsize(str(footer), max_text_width, self._footer_height)
+            footer_block = {
+                "text": footer_text,
+                "metrics": self._typography.measure(footer_text, self._footer_height),
+            }
+
+        return {
+            "title": title_block,
+            "rows": prepared_rows,
+            "footer": footer_block,
+        }
+
+    def _compute_height(self, card: Dict[str, Any]) -> int:
+        height = self._pad_top + self._pad_bottom
+
+        title_block = card.get("title")
+        rows: List[Dict[str, Any]] = card.get("rows", [])
+        footer_block = card.get("footer")
+
+        if title_block is not None:
+            _, h, base = title_block["metrics"]
+            height += h + base
+            if rows or footer_block:
+                height += self._row_gap
+
+        for idx, row in enumerate(rows):
+            label_block = row.get("label")
+            if label_block is not None:
+                _, h, base = label_block["metrics"]
+                height += h + base + self._label_value_gap
+
+            value_block = row.get("value")
+            _, h, base = value_block["metrics"]
+            height += h + base
+
+            if row.get("progress") is not None:
+                height += self._progress_height + self._progress_gap
+
+            hint_block = row.get("hint")
+            if hint_block is not None:
+                _, h, base = hint_block["metrics"]
+                height += h + base
+
+            if idx != len(rows) - 1 or footer_block is not None:
+                height += self._row_gap
+
+        if footer_block is not None:
+            _, h, base = footer_block["metrics"]
+            height += h + base
+
+        return int(height)
+
+    def _resolve_style(self, status: str) -> Dict[str, Tuple[int, int, int]]:
+        palette = ChipDrawer.get_palette(status)
+        return {
+            "fill": self._mix_color(self._BASE_FILL, palette.get("fill", self._BASE_FILL), 0.45),
+            "border": self._mix_color(self._BASE_BORDER, palette.get("border", self._BASE_BORDER), 0.55),
+            "title": self._BASE_TITLE,
+            "label": self._mix_color(self._BASE_LABEL, palette.get("text_secondary", self._BASE_LABEL), 0.3),
+            "value": self._mix_color(self._BASE_VALUE, palette.get("text_primary", self._BASE_VALUE), 0.4),
+            "hint": self._BASE_HINT,
+            "footer": self._BASE_FOOTER,
+            "accent": self._mix_color(self._BASE_ACCENT, palette.get("indicator", self._BASE_ACCENT), 0.6),
+            "progress_bg": self._BASE_PROGRESS_BG,
+            "progress_fg": self._mix_color(self._BASE_ACCENT, palette.get("indicator", self._BASE_ACCENT), 0.7),
+            "progress_border": self._mix_color(self._BASE_BORDER, palette.get("border", self._BASE_BORDER), 0.4),
+        }
+
+    @staticmethod
+    def _mix_color(base: Tuple[int, int, int], accent: Tuple[int, int, int], weight: float) -> Tuple[int, int, int]:
+        weight = max(0.0, min(1.0, weight))
+        return tuple(
+            int(round(base[i] * (1.0 - weight) + accent[i] * weight))
+            for i in range(3)
+        )
+
+    def _ellipsize(self, text: str, max_width: int, font_height: int) -> str:
+        if not text:
+            return ""
+
+        width, _, _ = self._typography.measure(text, font_height)
+        if width <= max_width:
+            return text
+
+        ellipsis = "…"
+        ell_w, _, _ = self._typography.measure(ellipsis, font_height)
+        if ell_w >= max_width:
+            return ellipsis
+
+        low, high = 0, len(text)
+        best = ""
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = text[:mid]
+            cand_w, _, _ = self._typography.measure(candidate, font_height)
+            if cand_w + ell_w <= max_width:
+                best = candidate
+                low = mid + 1
+            else:
+                high = mid - 1
+
+        return best + ellipsis if best else ellipsis
