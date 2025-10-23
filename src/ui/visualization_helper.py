@@ -103,7 +103,9 @@ def create_visualization_refactored(
     )
 
     # ===== HEATMAPS =====
-    if overlay_mode == OVERLAY_ALIGN:
+    # Note: Heatmaps disabled by default to keep ROI clean
+    # Can be re-enabled via separate analytics module later
+    if overlay_mode == OVERLAY_ALIGN and heatmap_enabled:
         disp_roi = overlay_renderer.render_heatmaps(
             disp_roi,
             heatmap_accumulator,
@@ -140,13 +142,19 @@ def create_visualization_refactored(
         motion_detected=motion_detected,
     )
 
-    # ===== OVERLAY STATUS =====
+    # ===== BOARD STATUS CHIPS (for sidebar) =====
+    board_status_chips = overlay_renderer.build_board_status_chips(
+        overlay_mode=overlay_mode,
+        calibration=calibration,
+        unified_calibration=unified_calibration,
+        current_preset=current_preset,
+        align_auto=align_auto
+    )
+
+    # ===== OVERLAY STATUS (minimal mode badge in ROI) =====
     disp_roi = overlay_renderer.render_overlay_status(
         disp_roi,
         overlay_mode,
-        calibration,
-        unified_calibration,
-        current_preset,
         align_auto
     )
 
@@ -161,6 +169,7 @@ def create_visualization_refactored(
         hud_metrics is not None
         or bool(sidebar_selection.cards)
         or bool(sidebar_selection.mode_chips)
+        or bool(board_status_chips)
     )
     if should_draw_sidebar:
         canvas = overlay_renderer.draw_metric_sidebar(
@@ -168,6 +177,7 @@ def create_visualization_refactored(
             hud_metrics=hud_metrics,
             cards=sidebar_selection.cards,
             mode_chips=sidebar_selection.mode_chips,
+            board_status_chips=board_status_chips,
         )
 
     return canvas

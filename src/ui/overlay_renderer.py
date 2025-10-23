@@ -208,8 +208,9 @@ class OverlayRenderer:
         hud_metrics: Optional[Tuple[float, float, float]] = None,
         cards: Optional[List[HudCardPayload]] = None,
         mode_chips: Optional[List[MetricChip]] = None,
+        board_status_chips: Optional[List[MetricChip]] = None,
     ) -> np.ndarray:
-        """Draw sidebar content (metrics + mode tabs + cards)."""
+        """Draw sidebar content (metrics + board status + mode tabs + cards)."""
 
         if self.sidebar_width <= 0:
             return canvas
@@ -280,6 +281,22 @@ class OverlayRenderer:
                     )
                     indicator_x += spacing
                 y += radius * 2 + chip_gap
+
+        # Board status chips (Mode, Rotation, Scale, Preset)
+        if board_status_chips:
+            for chip in board_status_chips:
+                _, height = self._chip_drawer.draw_metric_chip(
+                    canvas,
+                    origin=(x, y),
+                    label=chip.label,
+                    value=chip.value,
+                    status=chip.status,
+                    subtitle=chip.subtitle,
+                    compact=True,
+                )
+                y += height + chip_gap
+                if y >= max_y:
+                    break
 
         if mode_chips:
             for chip in mode_chips:
@@ -530,20 +547,18 @@ class OverlayRenderer:
 
         return selection
 
-    def render_overlay_status(
+    def build_board_status_chips(
         self,
-        img: np.ndarray,
         overlay_mode: int,
         calibration: Optional['Calibration'] = None,
         unified_calibration: Optional[object] = None,
         current_preset: str = "balanced",
         align_auto: bool = False
-    ) -> np.ndarray:
+    ) -> List[MetricChip]:
         """
-        Render overlay mode status (top-right of ROI).
+        Build board status chips for sidebar display.
 
         Args:
-            img: Image to draw on
             overlay_mode: Current overlay mode
             calibration: Board calibration
             unified_calibration: UnifiedCalibration object for scale calculation
@@ -551,7 +566,7 @@ class OverlayRenderer:
             align_auto: Auto-align status (ALIGN mode)
 
         Returns:
-            Image with status overlay
+            List of MetricChip objects
         """
         modes = {
             OVERLAY_MIN: "MIN",
@@ -572,12 +587,13 @@ class OverlayRenderer:
             mode_status = "accent" if align_auto else "info"
 
         chips = [
-            {
-                "label": "Mode",
-                "value": mode_value,
-                "status": mode_status,
-                "subtitle": mode_subtitle,
-            }
+            MetricChip(
+                key="mode",
+                label="Mode",
+                value=mode_value,
+                status=mode_status,
+                subtitle=mode_subtitle,
+            )
         ]
 
         if calibration is not None:
@@ -590,12 +606,13 @@ class OverlayRenderer:
             else:
                 rot_status, rot_subtitle = "bad", "FIX"
             chips.append(
-                {
-                    "label": "Rotation",
-                    "value": f"{rotation:.1f}°",
-                    "status": rot_status,
-                    "subtitle": rot_subtitle,
-                }
+                MetricChip(
+                    key="rotation",
+                    label="Rotation",
+                    value=f"{rotation:.1f}°",
+                    status=rot_status,
+                    subtitle=rot_subtitle,
+                )
             )
 
             base_radius = float(getattr(calibration, "r_outer_double_px", 0.0))
@@ -615,38 +632,70 @@ class OverlayRenderer:
                 scale_status, scale_subtitle = "info", "NO REF"
                 scale_value = "--"
             chips.append(
-                {
-                    "label": "Scale",
-                    "value": scale_value,
-                    "status": scale_status,
-                    "subtitle": scale_subtitle,
-                }
+                MetricChip(
+                    key="scale",
+                    label="Scale",
+                    value=scale_value,
+                    status=scale_status,
+                    subtitle=scale_subtitle,
+                )
             )
 
         preset_display = current_preset.replace("_", " ").title()
         chips.append(
-            {
-                "label": "Preset",
-                "value": preset_display,
-                "status": "info",
-                "subtitle": "DETECTOR",
-            }
+            MetricChip(
+                key="preset",
+                label="Preset",
+                value=preset_display,
+                status="info",
+                subtitle="DETECTOR",
+            )
         )
 
-        anchor_x = self.roi_size[0] - 16
-        y = 18
-        for chip in chips:
-            _, height = self._chip_drawer.draw_metric_chip(
-                img,
-                origin=(anchor_x, y),
-                label=chip["label"],
-                value=chip["value"],
-                status=chip["status"],
-                subtitle=chip.get("subtitle"),
-                align="right",
-                compact=True,
-            )
-            y += height + 8
+        return chips
+
+    def render_overlay_status(
+        self,
+        img: np.ndarray,
+        overlay_mode: int,
+        align_auto: bool = False
+    ) -> np.ndarray:
+        """
+        Render minimal mode badge in ROI panel (top-left).
+
+        Args:
+            img: Image to draw on
+            overlay_mode: Current overlay mode
+            align_auto: Auto-align status (ALIGN mode only)
+
+        Returns:
+            Image with minimal mode badge
+        """
+        modes = {
+            OVERLAY_MIN: "MIN",
+            OVERLAY_RINGS: "RINGS",
+            OVERLAY_FULL: "FULL",
+            OVERLAY_ALIGN: "ALIGN"
+        }
+
+        mode_value = modes.get(overlay_mode, "UNKNOWN")
+
+        # Minimal badge - just show mode
+        badge_color = (150, 150, 200)  # Soft gray-blue
+        if overlay_mode == OVERLAY_ALIGN:
+            badge_color = (0, 255, 255) if align_auto else (100, 200, 255)
+
+        # Draw small badge at top-left
+        cv2.putText(
+            img,
+            f"[{mode_value}]",
+            (12, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            badge_color,
+            1,
+            cv2.LINE_AA
+        )
 
         return img
 
