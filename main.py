@@ -177,6 +177,11 @@ class DartVisionApp:
         )
         self.hough_aligner: Optional[HoughCircleAligner] = None  # initialized after board_cfg
 
+        # Hotkey handler (initialized after app is ready)
+        self.hotkeys = None
+        self._last_disp = None  # For screenshot functionality
+        self._last_roi_frame = None  # For Hough functionality
+
         # Mapping/Scoring
         self.board_cfg: Optional[BoardConfig] = None
         self.board_mapper: Optional[BoardMapper] = None
@@ -1559,6 +1564,11 @@ class DartVisionApp:
         if not diag["ok"]:
             logger.warning(f"[SelfTest] Hints: {diag['messages']}")
 
+        # Initialize hotkey handler
+        from src.input.dart_vision_hotkeys import DartVisionHotkeys
+        self.hotkeys = DartVisionHotkeys(self)
+        logger.info("Hotkey system initialized")
+
         self.running = True
         logger.info("Main loop started.")
         try:
@@ -1582,262 +1592,28 @@ class DartVisionApp:
                 if self.paused:
                     cv2.putText(disp, "PAUSED", (500, 50), cv2.FONT_HERSHEY_DUPLEX, 1.5, (0,165,255), 3)
 
-
-                # jetzt die Tasten abfragen (bei Video gerne ein paar ms Blockzeit nutzen)
-                wait_delay = 1
-                if self.src_is_video and self.args.video_sync == "off":
-                    # wenn "off", trotzdem minimal blocken damit die GUI reagiert
-                    wait_delay = 1
-                raw_key = cv2.waitKeyEx(wait_delay)
-                key = raw_key & 0xFF
+                # Store for hotkey callbacks
+                self._last_disp = disp
+                self._last_roi_frame = roi_frame
 
                 cv2.imshow("Dart Vision MVP", disp)
 
+                # Handle keyboard input
+                wait_delay = 1
+                if self.src_is_video and self.args.video_sync == "off":
+                    wait_delay = 1
+                raw_key = cv2.waitKeyEx(wait_delay)
 
-                # 2) Debug: zuletzt empfangenen Key anzeigen
+
+                # Handle keyboard input with HotkeyHandler
                 if raw_key != -1:
-                    logger.debug(f"raw_key={raw_key} (0x{raw_key:08X}) masked={key}")
+                    logger.debug(f"raw_key={raw_key} (0x{raw_key:08X})")
                     self.last_key_dbg = f"{raw_key} (0x{raw_key:08X})"
-                # 3) Pfeiltasten (immer auf raw_key prüfen!)
-                if raw_key in (VK_LEFT, OCV_LEFT):
-                    self.overlay_rot_deg -= 0.5
-                    self._sync_mapper()
-                    if self.board_mapper:
-                        self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
-                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
-                elif raw_key in (VK_RIGHT, OCV_RIGHT):
-                    self.overlay_rot_deg += 0.5
-                    self._sync_mapper()
-                    if self.board_mapper:
-                        self.board_mapper.calib.rotation_deg = float(self.overlay_rot_deg)
-                    logger.info(f"[OVERLAY] rot={self.overlay_rot_deg:.2f} deg")
-                elif raw_key in (VK_UP, OCV_UP):
-                    self.overlay_scale = min(1.20, self.overlay_scale * 1.01)  # +1%
-                    self._sync_mapper()
-                    if self.board_mapper:
-                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
-                            self.overlay_scale)
-                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
-                elif raw_key in (VK_DOWN, OCV_DOWN):
-                    self.overlay_scale = max(0.80, self.overlay_scale / 1.01)  # -1%
-                    self._sync_mapper()
-                    if self.board_mapper:
-                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius) * float(
-                            self.overlay_scale)
-                    logger.info(f"[OVERLAY] scale={self.overlay_scale:.4f}")
-
-                # 4) ASCII-Tasten (auf 'key' prüfen)
-                if key == ord('q'):
-                    self.running = False
-                # --- Live Tuning: Motion-Segmentation (konfliktfreie Keys) ---
-                elif key == ord('b'):  # bias -
-                    if self.dart is not None:
-                        self.dart.config.motion_otsu_bias = int(max(-32, self.dart.config.motion_otsu_bias - 1))
-                        logger.info(f"[Tune] Otsu bias = {self.dart.config.motion_otsu_bias:+d}")
-                elif key == ord('B'):  # bias +
-                    if self.dart is not None:
-                        self.dart.config.motion_otsu_bias = int(min(64, self.dart.config.motion_otsu_bias + 1))
-                        logger.info(f"[Tune] Otsu bias = {self.dart.config.motion_otsu_bias:+d}")
-                elif key == ord('f'):  # open -
-                    if self.dart is not None:
-                        k = max(1, int(self.dart.config.morph_open_ksize) - 2)
-                        if k % 2 == 0: k -= 1
-                        self.dart.config.morph_open_ksize = max(1, k)
-                        logger.info(f"[Tune] Morph OPEN = {self.dart.config.morph_open_ksize}")
-                elif key == ord('F'):  # open +
-                    if self.dart is not None:
-                        k = int(self.dart.config.morph_open_ksize) + 2
-                        if k % 2 == 0: k += 1
-                        self.dart.config.morph_open_ksize = min(31, k)
-                        logger.info(f"[Tune] Morph OPEN = {self.dart.config.morph_open_ksize}")
-                elif key == ord('n'):  # close -
-                    if self.dart is not None:
-                        k = max(1, int(self.dart.config.morph_close_ksize) - 2)
-                        if k % 2 == 0: k -= 1
-                        self.dart.config.morph_close_ksize = max(1, k)
-                        logger.info(f"[Tune] Morph CLOSE = {self.dart.config.morph_close_ksize}")
-                elif key == ord('N'):  # close +
-                    if self.dart is not None:
-                        k = int(self.dart.config.morph_close_ksize) + 2
-                        if k % 2 == 0: k += 1
-                        self.dart.config.morph_close_ksize = min(31, k)
-                        logger.info(f"[Tune] Morph CLOSE = {self.dart.config.morph_close_ksize}")
-                elif key == ord('w'):  # minWhite -
-                    if self.dart is not None:
-                        v = float(getattr(self.dart.config, "motion_min_white_frac", 0.02)) - 0.002
-                        self.dart.config.motion_min_white_frac = max(0.0, round(v, 4))
-                        logger.info(f"[Tune] minWhite = {self.dart.config.motion_min_white_frac * 100:.2f}%")
-                elif key == ord('W'):  # minWhite +
-                    if self.dart is not None:
-                        v = float(getattr(self.dart.config, "motion_min_white_frac", 0.02)) + 0.002
-                        self.dart.config.motion_min_white_frac = min(0.20, round(v, 4))
-                        logger.info(f"[Tune] minWhite = {self.dart.config.motion_min_white_frac * 100:.2f}%")
-                # --- Toggle processed-mask debug view (Shift+V) ---
-                elif key == ord('V'):
-                    self.show_mask_debug = not getattr(self, "show_mask_debug", False)
-                    if not self.show_mask_debug:
-                        try:
-                            cv2.destroyWindow("MotionMask (processed)")
-                        except Exception:
-                            pass
-                    logger.info("Processed MotionMask window: %s", "ON" if self.show_mask_debug else "OFF")
-                elif key == ord('1'):
-                    self.dart.config = apply_detector_preset(self.dart.config, "aggressive")
-                    self.current_preset = "aggressive"
-                    logger.info("[PRESET] detector -> aggressive")
-                elif key == ord('2'):
-                    self.dart.config = apply_detector_preset(self.dart.config, "balanced")
-                    self.current_preset = "balanced"
-                    logger.info("[PRESET] detector -> balanced")
-                elif key == ord('3'):
-                    self.dart.config = apply_detector_preset(self.dart.config, "stable")
-                    self.current_preset = "stable"
-                    logger.info("[PRESET] detector -> stable")
-                elif key == ord('p'):
-                    self.paused = not self.paused
-                elif key == ord('d'):
-                    self.show_debug = not self.show_debug
-                elif key == ord('m'):
-                    self.show_motion = not self.show_motion
-                    logger.info("Motion overlay: %s", "ON" if self.show_motion else "OFF")
-                elif key == ord('M'):  # Shift-M
-                    self.show_mask = not getattr(self, "show_mask", False)
-                    logger.info("Mask overlay: %s", "ON" if self.show_mask else "OFF")
-                elif key == ord('r'):
-                    self.dart.clear_impacts();
-                    self.total_darts = 0
-                elif key == ord('s'):
-                    # Screenshot (s bleibt Screenshot)
-                    fn = f"screenshot_{int(time.time())}.jpg"
-                    cv2.imwrite(fn, disp)
-                    logger.info(f"Saved {fn}")
-                elif key == ord('c'):
-                    self._recalibrate_and_apply()
-                elif key == ord('g'):
-                    self.game.reset();
-                    self.last_msg = ""
-                    logger.info(f"[GAME] Reset {self.game.mode}")
-                elif key == ord('h'):
-                    new_mode = GameMode._301 if self.game.mode == GameMode.ATC else GameMode.ATC
-                    self.game.switch_mode(new_mode);
-                    self.last_msg = ""
-                    logger.info(f"[GAME] Switch to {self.game.mode}")
-                elif key == ord('H'):
-                    self.heatmap_enabled = not self.heatmap_enabled
-                    logger.info(f"[HEATMAP] image-space overlay -> {'ON' if self.heatmap_enabled else 'OFF'}")
-                elif key == ord('P'):
-                    self.polar_enabled = not self.polar_enabled
-                    logger.info(f"[HEATMAP] polar panel -> {'ON' if self.polar_enabled else 'OFF'}")
-                elif key ==ord('?'):  # Shift+/, oder H als Alternative
-                    self.show_help = not self.show_help
-                    logger.info(f"[HELP] overlay -> {'ON' if self.show_help else 'OFF'}")
-                elif key == ord('R'):
-                    self.overlay_center_dx = 0.0
-                    self.overlay_center_dy = 0.0
-                    self.overlay_scale = 1.0
-                    if self.board_mapper:
-                        self.board_mapper.calib.cx = float(ROI_CENTER[0])
-                        self.board_mapper.calib.cy = float(ROI_CENTER[1])
-                        self.board_mapper.calib.r_outer_double_px = float(self.roi_board_radius)
-                    logger.info("[OVERLAY] reset center/scale")
-                elif key in (ord('t'), ord('T')):
-                    res = self._hough_refine_rings(roi_frame)
-                    if res is None:
-                        logger.info("[HoughRings] no circles detected in current ROI")
-                    else:
-                        cx, cy, r_out = res
-                        if self.uc is None:
-                            logger.warning("[HoughRings] Unified calib not present in memory.")
-                        else:
-                            # center_dx/dy sind Offsets zur Basismitte (metrics.center_px)
-                            base_cx, base_cy = self.uc.metrics.center_px
-                            # --- Jitter-Guard: nur kleine Sprünge akzeptieren ---
-                            if self.board_mapper is not None:
-                                cal = self.board_mapper.calib
-                                dc = float(((cx - cal.cx) ** 2 + (cy - cal.cy) ** 2) ** 0.5)
-                                dr = abs(float(r_out) - float(cal.r_outer_double_px))
-                                if dc > 8.0 or dr > 4.0:
-                                    logger.debug(f"[HoughRings] jitter guard: skip (Δc={dc:.1f}px, Δr={dr:.1f}px)")
-                                    # kein Update – einfach zum nächsten Frame
-                                    # (nicht 'return', sonst verlässt du die run()-Schleife!)
-                                    continue
-                                else:
-                                    # --- Update anwenden ---
-                                    self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
-                                    self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
-                                    self.uc.overlay_adjust.r_outer_double_px = float(r_out)
-                                    # Eff. H aktualisieren + Mapper syncen + Maske erneuern
-                                    self.homography_eff = compute_effective_H(self.uc)
-                                    if hasattr(self, "_sync_mapper_from_unified"):
-                                        self._sync_mapper_from_unified()
-                                        self._roi_annulus_mask = None
-                                        self._ensure_roi_annulus_mask()
-                                        if self.dart is not None and self.board_mapper is not None:
-                                            self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
-                                            self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
-                                    # Persistenz
-                                    save_unified_calibration(self.calib_path, self.uc)
-                                    logger.info(f"[HoughRings] cx={cx:.1f} cy={cy:.1f} rOD={r_out:.1f}")
-                elif key == ord('z'):
-                    self.align_auto = not self.align_auto
-                    logger.info(f"[ALIGN] auto={'ON' if self.align_auto else 'OFF'} (mode must be ALIGN to run)")
-                elif key == ord('o'):
-                    self.overlay_mode = (self.overlay_mode + 1) % 4  # jetzt 0..3
-                    modes = {OVERLAY_MIN: "MIN", OVERLAY_RINGS: "RINGS", OVERLAY_FULL: "FULL", OVERLAY_ALIGN: "ALIGN"}
-                    logger.info(f"[OVERLAY] mode -> {modes[self.overlay_mode]}")
-                elif key == ord('j'):  # left
-                    self.overlay_center_dx -= 1.0;
-                    self._sync_mapper()
-                elif key == ord('l'):  # right
-                    self.overlay_center_dx += 1.0;
-                    self._sync_mapper()
-                elif key == ord('i'):  # up
-                    self.overlay_center_dy -= 1.0;
-                    self._sync_mapper()
-                elif key == ord('k'):  # down (nur wenn du Screenshot auf 's' lassen willst -> nimm z.B. ';' statt 's')
-                    self.overlay_center_dy += 1.0;
-                    self._sync_mapper()
-                elif key in (ord('x'), ord('X')):
-                    self._save_calibration_unified()  # <— EINZEILER
-                elif key in (ord('y'), ord('Y')):
-                    res = self._auto_sector_rotation_from_edges(roi_frame, apply=True)
-                    if res is None:
-                        logger.info("[AutoRot] no angular structure detected")
-                    else:
-                        dth, kappa = res
-                        logger.info(f"[AutoRot] applied delta={dth:+.2f}°, kappa={kappa:.2f}")
-
-                if raw_key == 0xA0000 or raw_key == 0xA30000:
-                    pass  # (nur als Beispiel: SHIFT-Flags, optional)
-                if key == ord('0'):
-                    self.roi_tx = self.roi_ty = 0.0
-                    self.roi_scale = 1.0
-                    self.roi_rot_deg = 0.0
-                    self._roi_adjust_dirty = True
-                elif raw_key in (VK_LEFT, OCV_LEFT) and (cv2.getWindowProperty("Dart Vision MVP", 0) == 0 or True):
-                    self.roi_tx -= STEP_T;
-                    self._roi_adjust_dirty = True
-                elif raw_key in (VK_RIGHT, OCV_RIGHT):
-                    self.roi_tx += STEP_T;
-                    self._roi_adjust_dirty = True
-                elif raw_key in (VK_UP, OCV_UP):
-                    self.roi_ty -= STEP_T;
-                    self._roi_adjust_dirty = True
-                elif raw_key in (VK_DOWN, OCV_DOWN):
-                    self.roi_ty += STEP_T;
-                    self._roi_adjust_dirty = True
-                elif key == ord('+') or key == ord('='):
-                    self.roi_scale *= STEP_S;
-                    self._roi_adjust_dirty = True
-                elif key == ord('-') or key == ord('_'):
-                    self.roi_scale /= STEP_S;
-                    self._roi_adjust_dirty = True
-                elif key == ord(','):
-                    self.roi_rot_deg -= STEP_R;
-                    self._roi_adjust_dirty = True
-                elif key == ord('.'):
-                    self.roi_rot_deg += STEP_R;
-                    self._roi_adjust_dirty = True
+                    # Try both raw_key and masked key
+                    handled = self.hotkeys.handle_key(raw_key)
+                    if not handled:
+                        key = raw_key & 0xFF
+                        self.hotkeys.handle_key(key)
 
 
         except KeyboardInterrupt:
