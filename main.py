@@ -175,7 +175,7 @@ class DartVisionApp:
             main_size=(800, 600),
             canvas_size=(1200, 600)
         )
-        self.hough_aligner: Optional[HoughCircleAligner] = None  # initialized after board_cfg
+        self.hough_aligner = None  # HoughAlignerManager, initialized after board_cfg
 
         # Hotkey handler (initialized after app is ready)
         self.hotkeys = None
@@ -368,179 +368,8 @@ class DartVisionApp:
     # _ratio_consistent removed - now in HoughCircleAligner
 
     # _hough_refine_center removed - now in HoughCircleAligner
-
-    def _hough_refine_rings(self, roi_bgr: np.ndarray) -> tuple[float, float, float] | None:
-        """
-        Findet konzentrische Ringe via HoughCircles (im ROI-Panel).
-        Liefert (cx, cy, r_double_outer_px) oder None.
-        Mit Jitter-Guard & EMA-Stabilisierung.
-        """
-        if roi_bgr is None or roi_bgr.size == 0:
-            return None
-
-        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 1.2)
-
-        # Erwartungsbereich um aktuellen Wert (±15 %)
-        if self.board_mapper is not None:
-            r0 = float(self.board_mapper.calib.r_outer_double_px)
-        elif self.uc is not None:
-            r0 = float(self.uc.overlay_adjust.r_outer_double_px)
-        else:
-            r0 = float(self.roi_board_radius) * float(self.overlay_scale)
-
-        rmin = max(10, int(r0 * 0.85))
-        rmax = int(r0 * 1.15)
-
-        circles = cv2.HoughCircles(
-            gray, cv2.HOUGH_GRADIENT, dp=1.15, minDist=18,
-            param1=170, param2=32, minRadius=int(rmin), maxRadius=int(rmax)
-        )
-
-        if circles is None:
-            return None
-
-        c = np.uint16(np.around(circles[0]))  # (N,3): x,y,r
-        r_out_guess = float(max(c, key=lambda k: k[2])[2])
-
-        # Ratio-Check (stellt sicher, dass Triple/Double-Verhältnis passt)
-        if not self._ratio_consistent(c, r_out_guess):
-            return None
-
-        # Größten Kreis nehmen und ggf. mitteln
-        close = [k for k in c if abs(float(k[2]) - r_out_guess) < r0 * 0.03]
-        cx = float(np.mean([k[0] for k in close]))
-        cy = float(np.mean([k[1] for k in close]))
-        r_out = float(np.mean([k[2] for k in close]))
-
-        # --- EMA smoothing (sanfte Stabilisierung) ---
-        alpha = 0.25
-        if hasattr(self, "_last_hough"):
-            last_cx, last_cy, last_r = self._last_hough
-            cx = alpha * cx + (1 - alpha) * last_cx
-            cy = alpha * cy + (1 - alpha) * last_cy
-            r_out = alpha * r_out + (1 - alpha) * last_r
-        self._last_hough = (cx, cy, r_out)
-
-        # --- Jitter-Guard (Sprünge abfangen) ---
-        if self.board_mapper is not None:
-            cal = self.board_mapper.calib
-            dc = float(np.hypot(cx - cal.cx, cy - cal.cy))
-            dr = abs(r_out - cal.r_outer_double_px)
-            if dc > 8.0 or dr > 4.0:
-                logger.debug(f"[HoughRings] jitter guard: skip (Δc={dc:.1f}px, Δr={dr:.1f}px)")
-                return None
-
-        # Debug: Anzeige der gefundenen Kreise
-        if getattr(self, "show_debug", False):
-            dbg = roi_bgr.copy()
-            cv2.circle(dbg, (int(round(cx)), int(round(cy))), int(round(r_out)), (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.imshow("Hough-Rings (debug)", dbg)
-
-        return cx, cy, r_out
-
-    def _auto_sector_rotation_from_edges(self, roi_bgr: np.ndarray, apply: bool = True) -> tuple[float, float] | None:
-        """
-        Schätzt den Rotations-Offset (in Grad) für die Sektor-Ausrichtung anhand eines
-        Winkel-Histogramms aus Kantenpunkten. Nutzt die 20er-Periodizität der Segmente.
-        Rückgabe: (delta_deg, kappa) oder None bei schwachem Signal.
-          - delta_deg: Vorschlag, den auf calib.rotation_deg addiert werden sollte
-          - kappa: Norm der N-fachen Phasensumme (0..1) als Qualitätsmaß
-        """
-        if roi_bgr is None or roi_bgr.size == 0 or self.board_cfg is None:
-            return None
-
-        # 1) Kanten im ROI
-        gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        edges = cv2.Canny(gray, 70, 200)  # etwas strenger als fürs Motion-Gate
-
-        ys, xs = np.nonzero(edges)
-        if xs.size < 200:  # zu wenig Punkte → kein verlässliches Signal
-            return None
-
-        # 2) Winkel relativ zur aktuellen Kalibrierung (wie im Mapper)
-        #    Screen-Winkel: 0° an +x, CCW; y-Achse ist nach unten → dy negieren.
-        cal = self._overlay_calib()  # Single Source: cx, cy, r_out, rot
-        dx = xs.astype(np.float32) - float(cal.cx)
-        dy = ys.astype(np.float32) - float(cal.cy)
-        theta_screen = (np.degrees(np.arctan2(-dy, dx)) + 360.0) % 360.0
-
-        # Effektiven theta0 (Grenze oder Mitte) aus Konfig
-        theta0 = self.board_cfg.angles.theta0_effective(self.board_cfg.sectors)
-        # Rebase auf relative Winkelskala des Mappers
-        theta_rel = (theta_screen - float(cal.rotation_deg) - theta0) % 360.0
-        if self.board_cfg.angles.clockwise:
-            theta_rel = (360.0 - theta_rel) % 360.0
-
-        # Optional: Ring-Annulus maskieren (Singles-Bereich liefert i.d.R. die stärksten Sektor-Kanten)
-        r = np.hypot(dx, dy) / max(float(cal.r_outer_double_px), 1e-6)
-        annulus = (r > 0.30) & (r < 0.92)  # zwischen Single-Innen und Double-Innen
-        theta_rel = theta_rel[annulus]
-        if theta_rel.size < 200:
-            return None
-
-        # 3) 20-fache Periodizität aggregieren: Z = mean(exp(i*N*theta))
-        N = 20
-        theta_rad = np.deg2rad(theta_rel)
-        Z = np.exp(1j * N * theta_rad).mean()
-        kappa = float(np.abs(Z))  # 0..1 Signalstärke
-
-        # schwaches Signal? abbrechen
-        if not np.isfinite(kappa) or kappa < 0.03:
-            return None
-
-        # Phasenlage → geschätzter Offset relativ zur aktuellen 0-Linie
-        # Wenn Peaks bei theta = theta0_est + k*(360/N) liegen, dann angle(Z) ≈ N * theta0_est
-        phi = float(np.angle(Z))  # rad, (-π, π]
-        theta0_est_deg = (phi * 180.0 / math.pi) / N  # in Grad, typ. in (-9, 9]
-        delta_deg = -theta0_est_deg  # Korrektur: wir wollen, dass Peak bei 0° liegt
-
-        # Auf sinnvollen Bereich clampen (verhindert „Sprünge“)
-        width = float(self.board_cfg.sectors.width_deg)  # meist 18
-        half = width * 0.5
-        while delta_deg <= -half:
-            delta_deg += width
-        while delta_deg > half:
-            delta_deg -= width
-
-        # Optional: kleine Updates sanft begrenzen (z. B. max ±5°)
-        delta_deg = float(np.clip(delta_deg, -5.0, 5.0))
-
-        # Anwenden?
-        if apply and self.uc is not None:
-            self.uc.overlay_adjust.rotation_deg = float(self.uc.overlay_adjust.rotation_deg + delta_deg)
-            # Refresh + persist
-            self.homography_eff = compute_effective_H(self.uc)
-            if hasattr(self, "_sync_mapper_from_unified"):
-                self._sync_mapper_from_unified()
-                self._roi_annulus_mask = None
-                self._ensure_roi_annulus_mask()
-            save_unified_calibration(self.calib_path, self.uc)
-
-        # Debug-Plot (optional)
-        if getattr(self, "show_debug", False):
-            # kleines Histogramm zum Check
-            bins = 120
-            hist, edges_deg = np.histogram(theta_rel, bins=bins, range=(0.0, 360.0))
-            h = np.zeros((120, 360, 3), dtype=np.uint8)
-            hh = (hist / max(hist.max(), 1)) * (h.shape[0] - 1)
-            for i in range(360):
-                b = int((i / 360.0) * bins)
-                val = int(hh[b])
-                if val > 0:
-                    cv2.line(h, (i, h.shape[0] - 1), (i, h.shape[0] - 1 - val), (180, 255, 180), 1)
-            # Markiere erwartete 20er-Gitter nach Korrektur
-            for k in range(N):
-                ang = (k * width) % 360.0
-                x = int(round(ang))
-                cv2.line(h, (x, 0), (x, h.shape[0] - 1), (100, 200, 255), 1)
-            cv2.putText(h, f"dth:{delta_deg:+.2f} deg  kappa:{kappa:.2f}", (6, 16),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
-            cv2.imshow("Angle-Histogram (20x)", h)
-
-        return float(delta_deg), kappa
-
+    # _hough_refine_rings removed - now in HoughAlignerManager
+    # _auto_sector_rotation_from_edges removed - now in HoughAlignerManager
     # HUD methods removed - now handled by HUDRenderer
 
     def _overlay_center_radius(self):
@@ -786,94 +615,16 @@ class DartVisionApp:
 
     # ----- Pipeline -----
     def process_frame(self, frame):
-        self.frame_count += 1
-        timestamp = time.time() - self.session_start
+        """
+        Process a single frame through the pipeline.
 
-        self._apply_effective_H_if_dirty()
-        roi_frame = self.roi.warp_roi(frame)
-        # ROI
-        roi_frame = self.roi.warp_roi(frame)
-        # Motion
-        motion_detected, motion_event, fg_mask = self.motion.detect_motion(roi_frame, self.frame_count, timestamp)
-        # ... du hast hier bereits 'fg_mask' im ROI ...
-        if self._roi_annulus_mask is not None and fg_mask is not None:
-            fg_mask = cv2.bitwise_and(fg_mask, self._roi_annulus_mask)
+        Delegates to FrameProcessor for clean, maintainable processing.
+        """
+        if not hasattr(self, 'frame_processor'):
+            from src.pipeline import FrameProcessor
+            self.frame_processor = FrameProcessor(self)
 
-        # Dart detection
-        impact = None
-        if motion_detected:
-            impact = self.dart.detect_dart(roi_frame, fg_mask, self.frame_count, timestamp)
-            if impact:
-                self.total_darts += 1
-                if impact and self.board_mapper is not None:
-                    ring, sector, label = self.board_mapper.score_from_hit(
-                        float(impact.position[0]), float(impact.position[1])
-                    )
-                    pts = self._points_from_mapping(ring, sector)
-                    impact.score_label = label  # z.B. "D20", "T5", "25", "50"
-                    # Game-Update
-                    self.last_msg = self.game.apply_points(pts, label)
-                    if self.show_debug:
-                        logger.info(f"[SCORE] {label} -> {pts} | {self.last_msg}")
-                    # stats update (ROI coordinates optional)
-                    self.stats.add(ring=ring, sector=sector, points=pts,cx = float(impact.position[0]), cy = float(
-                        impact.position[1]))
-                if self.show_debug:
-                    logger.info(f"[DART #{self.total_darts}] pos={impact.position} conf={impact.confidence:.2f}")
-                    # --- Heatmaps update (ROI coordinates) ---
-                try:
-                    cx, cy = int(impact.position[0]), int(impact.position[1])
-                    if self.hm is not None:
-                        self.hm.add_hit(cx, cy, weight=1.0)
-                    if (self.ph is not None) and (self.board_mapper is not None):
-                        # ring/sector were computed above (label/pts)
-                        self.ph.add(ring, sector)
-                except Exception as _e:
-                    if self.show_debug:
-                        logger.debug(f"[HM] update skipped: {_e}")
-
-        # Show processed motion mask for tuning (aus dem Detector)
-        if self.show_mask_debug and self.dart is not None and getattr(self.dart, "last_processed_mask",
-                                                                      None) is not None:
-            pm = self.dart.last_processed_mask
-            pm_show = pm if (pm.shape[1] == ROI_SIZE[0] and pm.shape[0] == ROI_SIZE[1]) else cv2.resize(pm, ROI_SIZE,
-                                                                                                        interpolation=cv2.INTER_NEAREST)
-            cv2.imshow("MotionMask (processed)", pm_show)
-
-        # 🟡 Auto-Align (alle 15 Frames, nur im ALIGN-Modus)
-        if self.overlay_mode == OVERLAY_ALIGN and self.align_auto and (self.frame_count % 15 == 0):
-            # 1) Ringe/Hough zuerst → Center/Radius stabilisieren
-            res = self._hough_refine_rings(roi_frame)
-            if res is None:
-                logger.debug("[AutoAlign] Hough: no circle / rejected (ratio/jump)")
-            else:
-                cx, cy, r_out = res
-                if self.uc is None:
-                    logger.warning("[AutoAlign] Unified calib missing; skip Hough update")
-                else:
-                    base_cx, base_cy = self.uc.metrics.center_px
-                    self.uc.overlay_adjust.center_dx_px = float(cx) - float(base_cx)
-                    self.uc.overlay_adjust.center_dy_px = float(cy) - float(base_cy)
-                    self.uc.overlay_adjust.r_outer_double_px = float(r_out)
-                    self.homography_eff = compute_effective_H(self.uc)
-                    self._sync_mapper_from_unified()
-                    # nach jeder erfolgreichen Geometrie-Aktualisierung:
-                    self._roi_annulus_mask = None
-                    self._ensure_roi_annulus_mask()
-                    if self.dart is not None and self.board_mapper is not None:
-                        self.dart.config.cal_cx = float(self.board_mapper.calib.cx)
-                        self.dart.config.cal_cy = float(self.board_mapper.calib.cy)
-
-                    # optional: nicht jedes Mal speichern – hier ok, damit’s persistent ist
-                    save_unified_calibration(self.calib_path, self.uc)
-
-            # 2) Danach Winkel-Feinjustage (Sektoren)
-            res2 = self._auto_sector_rotation_from_edges(roi_frame, apply=True)
-            if res2 is not None:
-                dth, kappa = res2
-                logger.info(f"[AutoRot] Δθ={dth:+.2f}°, κ={kappa:.2f}")
-
-        return roi_frame, motion_detected, fg_mask, impact
+        return self.frame_processor.process_frame(frame)
     def _overlay_calib(self) -> Calibration:
         """Aktuelle Overlay-Geometrie (Single Source)."""
         if self.board_mapper is not None:

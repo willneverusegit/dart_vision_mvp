@@ -173,7 +173,7 @@ class AppInitializer:
                 self.logger.debug(f"[ROI] base radius set -> {self.app.roi_base_radius:.2f}px")
 
     def _init_board_config(self):
-        """Load board configuration from YAML."""
+        """Load board configuration from YAML and initialize Hough aligner."""
         board_path = Path(self.args.board_yaml).expanduser().resolve()
 
         if not board_path.exists():
@@ -188,6 +188,11 @@ class AppInitializer:
             except Exception as e:
                 self.logger.warning(f"[BOARD] Fehler beim Laden ({e}) – nutze Defaults.")
                 self.app.board_cfg = BoardConfig()
+
+        # Initialize Hough aligner manager after board config is loaded
+        from src.board.hough_aligner_manager import HoughAlignerManager
+        self.app.hough_aligner = HoughAlignerManager(self.app, self.app.board_cfg)
+        self.logger.debug("[HOUGH] HoughAlignerManager initialized")
 
     def _init_board_mapper(self):
         """Initialize board mapper (unified or legacy mode)."""
