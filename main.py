@@ -823,24 +823,35 @@ class DartVisionApp:
 
     # ----- Calibration UI (only UnifiedCalibrator) -----
     def _calibration_ui(self) -> bool:
+        """
+        Run interactive calibration UI.
+        
+        Delegates to CalibrationUIManager for clean, maintainable calibration.
+        """
+        from src.calibration.calibration_ui_manager import CalibrationUIManager
+        from src.calibration.aruco_quad_calibrator import ArucoQuadCalibrator
+        from src.capture import ThreadedCamera, CameraConfig
+        import time
 
-
+        # Parse ArUco rectangle size
         aruco_rect_mm = None
         if self.args.aruco_size_mm:
             try:
                 wmm, hmm = self.args.aruco_size_mm.lower().split("x")
                 aruco_rect_mm = (float(wmm), float(hmm))
             except Exception:
-                logger.warning("Could not parse --aruco-size-mm; expected format 'WxH', e.g., '600x600'")
+                logger.warning("Could not parse --aruco-size-mm; expected format 'WxH'")
 
+        # Setup ArUco-Quad calibrator if requested
         aruco_dict = ARUCO_DICT_MAP.get(self.args.aruco_dict.upper(), cv2.aruco.DICT_4X4_50)
-        self.aruco_quad = ArucoQuadCalibrator(
+        aruco_quad = ArucoQuadCalibrator(
             dict_name=aruco_dict,
             roi_size=400,
             expected_ids=self.args.aruco_ids,
             debug=False
         ) if self.args.aruco_quad else None
-        self._aruco_rect_mm = aruco_rect_mm
+
+        # Setup temporary camera for calibration
         cam_src = self.args.video if self.args.video else self.args.webcam
         cam_cfg = CameraConfig(
             src=cam_src,
@@ -853,198 +864,65 @@ class DartVisionApp:
                 self.cal.tune_params_for_resolution(w, h)
             ))
         )
-        temp = ThreadedCamera(cam_cfg)
-        if not temp.start():
+        
+        temp_camera = ThreadedCamera(cam_cfg)
+        if not temp_camera.start():
             logger.error("Cannot open source for calibration preview.")
             return False
 
-        # Try to set requested resolution if provided via CLI
+        # Apply resolution if specified
         if self.args.width and self.args.height:
-            temp.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
-            temp.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
+            temp_camera.capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.args.width)
+            temp_camera.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.args.height)
 
-        # Grab one frame to know actual resolution
-        ok0, frame0 = temp.read()
+        # Tune for actual resolution
+        ok0, frame0 = temp_camera.read()
         if ok0 and self.args.charuco_tune:
             h0, w0 = frame0.shape[:2]
             tuned = self.cal.tune_params_for_resolution(w0, h0)
             self.cal.set_detector_params(tuned)
-            logger.info(f"[TUNE] Charuco/Aruco params applied for {w0}x{h0}.")
+            logger.info(f"[TUNE] ChArUco/AruCo params applied for {w0}x{h0}.")
 
         time.sleep(0.3)
-        logger.info("Calibration UI:")
-        logger.info("  c = collect ChArUco sample")
-        logger.info("  k = calibrate from collected samples")
-        logger.info("  m = manual 4-corner homography (click TL,TR,BR,BL)")
-        logger.info("  s = save calibration")
-        logger.info("  q = quit")
 
-        clicked_pts: List[Tuple[int,int]] = []
-        captured_for_manual: Optional[np.ndarray] = None
+        # Create UI manager
+        ui_manager = CalibrationUIManager(
+            calibrator=self.cal,
+            camera=temp_camera,
+            roi_size=ROI_SIZE,
+            aruco_quad_calibrator=aruco_quad,
+            aruco_rect_mm=aruco_rect_mm,
+            use_clahe=getattr(self.args, "clahe", False),
+            hud_renderer=self.hud_renderer
+        )
 
-        def _metrics_for_hud(gray):
-            import numpy as np, cv2
-            mean = float(np.mean(gray))  # brightness 0..255
-            lap_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())  # focus proxy
-            edges = cv2.Canny(gray, 80, 160)
-            edge_pct = 100.0 * float(np.mean(edges > 0))
-            return mean, lap_var, edge_pct
+        # Callback to update app state when calibration completes
+        def on_calibration_complete(H, center_px, r_outer_double_px, mm_per_px):
+            self._update_uc_from_calibrator(
+                H_base=H,
+                center_px=center_px,
+                r_outer_double_px=float(r_outer_double_px),
+                roi_adjust=(0.0, 0.0, 1.0, 0.0),
+                rotation_deg=0.0
+            )
+            self.homography = H
+            self.center_px = center_px
+            self.roi_board_radius = r_outer_double_px
+            self.mm_per_px = mm_per_px
 
-        def on_mouse(event, x, y, flags, param):
-            nonlocal clicked_pts
-            if event == cv2.EVENT_LBUTTONDOWN and captured_for_manual is not None and len(clicked_pts) < 4:
-                clicked_pts.append((x, y))
-                logger.info(f"[MANUAL] Corner {len(clicked_pts)}/4: {(x,y)}")
+        ui_manager.on_calibration_complete = on_calibration_complete
 
-        cv2.namedWindow("Calibration")
-        cv2.setMouseCallback("Calibration", on_mouse)
+        # Run interactive UI
+        success = ui_manager.run_interactive_ui()
 
-        while True:
-            ok, frame = temp.read()
-            if not ok:
-                continue
-            display = frame.copy()
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            if self.args.clahe:
-                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-                gray = clahe.apply(gray)
+        # Cleanup
+        temp_camera.stop()
 
-            # 1) Detection (wie bisher)
-            mk_c, mk_ids, ch_c, ch_ids = self.cal.detect_charuco(frame)
-            mk_n = 0 if mk_ids is None else len(mk_ids)
-            ch_n = 0 if ch_ids is None else len(ch_ids)
+        # Save if successful
+        if success:
+            self._save_calibration_unified()
 
-            # 2) Optional: Marker/Corners zeichnen (wie bisher)
-            if mk_ids is not None and len(mk_ids) > 0:
-                cv2.aruco.drawDetectedMarkers(display, mk_c, mk_ids)
-            if ch_c is not None and len(ch_c) > 0:
-                for pt in ch_c:
-                    p = tuple(pt.astype(int).ravel())
-                    cv2.circle(display, p, 3, (0, 255, 0), -1)
-
-            # HUD + Ampel (geglättet)
-            b_mean, f_var, e_pct = self._hud_compute(gray)
-            hud_color = self._hud_color(b_mean, f_var, e_pct)
-            y = 30
-            for line in [
-                f"B:{b_mean:.0f}  F:{int(f_var)}  E:{e_pct:.1f}%   (targets B~135–150, F>800, E~4–12%)",
-                "Keys: [m] manual-4  [a] aruco-quad  [s] save (unified)  [q] quit",
-            ]:
-                cv2.putText(display, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, hud_color, 2, cv2.LINE_AA);
-                y += 22
-            self._draw_traffic_light(display, b_mean, f_var, e_pct, org=(12, 105))
-
-            # 4) Zeigen
-            cv2.imshow("Calibration", display)
-            key = cv2.waitKey(1) & 0xFF
-
-            if key == ord('q'):
-                temp.stop(); cv2.destroyWindow("Calibration")
-                return self.homography is not None
-
-
-            elif key == ord('a') and self.aruco_quad is not None:
-                # One-shot ArUco-Quad calibration from current frame
-                ok, frame = temp.read()
-                if not ok or frame is None:
-                    logger.warning("[ArucoQuad] no frame")
-                    continue
-                okH, H, mmpp, info = self.aruco_quad.calibrate_from_frame(
-                    frame,
-                    rect_width_mm=self._aruco_rect_mm[0] if self._aruco_rect_mm else None,
-                    rect_height_mm=self._aruco_rect_mm[1] if self._aruco_rect_mm else None
-                )
-                if not okH:
-                    logger.warning(
-                        f"[ArucoQuad] failed: {info.get('reason', 'unknown')}, markers={info.get('markers', 0)}")
-                    continue
-                # keep last homography in app (for draw/preview/save)
-                self.cal.H = H  # store in UnifiedCalibrator for consistency
-                self.cal.last_image_size = frame.shape[1], frame.shape[0]
-
-                # --- Unified: sofort in UC übernehmen ---
-                # center_px: zentrale ROI/Canvas-Referenz; hier ok: Bildmitte der Preview
-                h_now, w_now = frame.shape[:2]
-                center_px = (w_now * 0.5, h_now * 0.5)
-
-                # r_outer_double_px aus mm/px + bekannter Board-Geometrie ableiten, falls möglich
-                r_od_px = None
-                try:
-                    if mmpp and getattr(self.cal, "board_diameter_mm", None):
-                        r_od_px = float(self.cal.board_diameter_mm) * 0.5 / float(mmpp)
-                except Exception:
-                    pass
-                if r_od_px is None:
-                    # Fallback: falls du bereits einen ROI-Radius im State führst
-                    r_od_px = float(getattr(self, "roi_board_radius", 420.0))
-
-                self._update_uc_from_calibrator(
-                    H_base=H,
-                    center_px=center_px,
-                    r_outer_double_px=float(r_od_px),
-                    roi_adjust=(0.0, 0.0, 1.0, 0.0),  # keine ROI-Adjusts gesetzt
-                    rotation_deg=0.0,  # Feine Sektorausrichtung später im Align
-                )
-
-                # Visual feedback: draw edges of ROI projection
-                disp = self.aruco_quad.draw_debug(frame, [], None, None, H)
-                cv2.imshow("ArucoQuad preview", disp)
-                logger.info(f"[ArucoQuad] H OK | ids={info.get('ids')} | mm/px={mmpp}")
-
-                # Auto-save if user requested immediate save
-                if self.args.save_yaml:
-                    data = self.aruco_quad.to_yaml_dict(H=H, mm_per_px=mmpp, rect_size_mm=self._aruco_rect_mm,
-                                                        used_ids=info.get("ids"))
-                    save_calibration_yaml(self.args.save_yaml, data)
-                    logger.info(f"[ArucoQuad] saved YAML → {self.args.save_yaml}")
-
-
-            elif key == ord('m'):
-                captured_for_manual = frame.copy()
-                clicked_pts.clear()
-                logger.info("[Manual] frame captured; click 4 corners (TL,TR,BR,BL).")
-
-
-
-            elif key == ord('s'):
-                # 1) Falls manuelle 4 Punkte geklickt wurden und noch keine H vorhanden ist: berechnen
-                if self.homography is None and captured_for_manual is not None and len(clicked_pts) == 4:
-                    H, center, roi_r, mmpp = UnifiedCalibrator._homography_and_metrics(
-                        np.float32(clicked_pts),
-                        roi_size=ROI_SIZE[0],
-                        board_diameter_mm=self.cal.board_diameter_mm
-                    )
-                    self.homography = H
-                    self.center_px = center
-                    self.roi_board_radius = roi_r
-                    self.mm_per_px = mmpp
-                    # Unified-Struktur aktualisieren (center/roi_r kommen hier direkt aus der Berechnung)
-                    self._update_uc_from_calibrator(
-                        H_base=H,
-                        center_px=center,
-                        r_outer_double_px=float(roi_r),
-                        roi_adjust=(0.0, 0.0, 1.0, 0.0),
-                        rotation_deg=0.0,
-                    )
-
-                # 2) Ohne Homography können wir nichts speichern
-                if self.homography is None:
-                    logger.warning("No homography yet. Use manual (m) or ArUco-Quad (a) first.")
-                    continue
-
-                # 3) Unified speichern (Einzeiler)
-                self._save_calibration_unified()
-
-                # 4) UI schließen
-                temp.stop()
-                cv2.destroyWindow("Calibration")
-                return True
-
-            # If calibrated intrinsics exist, also try pose each frame (informational)
-            if self.cal.K is not None and self.cal.D is not None:
-                okp, rvec, tvec = self.cal.estimate_pose_charuco(frame)
-                if okp:
-                    cv2.drawFrameAxes(disp, self.cal.K, self.cal.D, rvec, tvec, 0.08)
+        return success
 
     def _apply_loaded_yaml(self, data: dict):
         t = (data or {}).get("type")
