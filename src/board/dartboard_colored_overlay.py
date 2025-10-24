@@ -259,9 +259,9 @@ def draw_colored_dartboard_overlay(
     for sector_idx, sector_num in enumerate(DARTBOARD_SECTORS):
         # Calculate sector angles (OpenCV convention with inverted Y-axis)
         # Sector 0 (20) centered at 270° (top/12 o'clock)
-        # Sector 1 (1) centered at 270° - 18° = 252°
-        # etc. (clockwise around board because of inverted Y)
-        angle_center = 270.0 - sector_idx * angle_per_sector
+        # Sector 1 (1) centered at 270° + 18° = 288°
+        # etc. (CLOCKWISE around board - we ADD because Y is inverted!)
+        angle_center = 270.0 + sector_idx * angle_per_sector
         angle_start = angle_center - 9.0  # Half sector width
         angle_end = angle_center + 9.0
 
