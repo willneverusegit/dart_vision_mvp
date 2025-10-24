@@ -2,8 +2,9 @@
 Colored Dartboard Overlay - Renders realistic dartboard with colors.
 
 Provides 1:1 visual representation of scoring zones for calibration:
-- Triple/Double rings: Alternating Red/Green
-- Single fields: Alternating Dark/Light (Black/Cream)
+- Each SECTOR (pie slice) colored individually
+- Triple/Double rings: Alternating Red/Green per sector
+- Single fields: Alternating Dark/Light (Black/Cream) per sector
 - Bullseye: Inner Red (50pts), Outer Green (25pts)
 - Centered numbers in single fields
 """
@@ -46,7 +47,7 @@ COLORS_BGR = {
 DEFAULT_ALPHA = 0.40
 
 
-def draw_ring_segment(
+def draw_filled_sector(
     img: np.ndarray,
     center: Tuple[int, int],
     radius_inner: float,
@@ -57,55 +58,53 @@ def draw_ring_segment(
     alpha: float = DEFAULT_ALPHA
 ) -> np.ndarray:
     """
-    Draw a colored ring segment (arc) with transparency.
+    Draw a filled sector (pie slice) between two radii.
 
     Args:
         img: Image to draw on
         center: Center point (cx, cy)
         radius_inner: Inner radius
         radius_outer: Outer radius
-        angle_start_deg: Start angle in degrees (0° = top)
+        angle_start_deg: Start angle in degrees (0° = right, counter-clockwise in OpenCV)
         angle_end_deg: End angle in degrees
         color: BGR color tuple
         alpha: Transparency (0.0 = transparent, 1.0 = opaque)
 
     Returns:
-        Image with segment drawn
+        Image with sector drawn
     """
     # Create overlay for alpha blending
     overlay = img.copy()
 
-    # Convert angles for OpenCV (0° = right, counterclockwise)
-    # Our convention: 0° = top, clockwise
-    cv_angle_start = 90 - angle_end_deg
-    cv_angle_end = 90 - angle_start_deg
+    # Create points for filled polygon
+    # We need to draw the sector as a polygon with many points
 
-    # Draw filled arc (outer radius)
-    cv2.ellipse(
-        overlay,
-        center,
-        (int(radius_outer), int(radius_outer)),
-        0,
-        cv_angle_start,
-        cv_angle_end,
-        color,
-        -1,
-        cv2.LINE_AA
-    )
+    # Number of points along the arc (more = smoother)
+    num_points = max(10, int(abs(angle_end_deg - angle_start_deg)))
 
-    # Cut out inner circle (to create ring)
-    if radius_inner > 0:
-        cv2.ellipse(
-            overlay,
-            center,
-            (int(radius_inner), int(radius_inner)),
-            0,
-            0,
-            360,
-            (0, 0, 0),
-            -1,
-            cv2.LINE_AA
-        )
+    # Outer arc points
+    outer_points = []
+    for i in range(num_points + 1):
+        angle = angle_start_deg + (angle_end_deg - angle_start_deg) * i / num_points
+        rad = math.radians(angle)
+        x = int(center[0] + radius_outer * math.cos(rad))
+        y = int(center[1] + radius_outer * math.sin(rad))
+        outer_points.append([x, y])
+
+    # Inner arc points (reversed)
+    inner_points = []
+    for i in range(num_points + 1):
+        angle = angle_end_deg - (angle_end_deg - angle_start_deg) * i / num_points
+        rad = math.radians(angle)
+        x = int(center[0] + radius_inner * math.cos(rad))
+        y = int(center[1] + radius_inner * math.sin(rad))
+        inner_points.append([x, y])
+
+    # Combine to form closed polygon
+    points = np.array(outer_points + inner_points, dtype=np.int32)
+
+    # Draw filled polygon
+    cv2.fillPoly(overlay, [points], color, cv2.LINE_AA)
 
     # Blend with original image
     cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
@@ -130,7 +129,7 @@ def draw_sector_number(
         center: Board center (cx, cy)
         radius_inner: Inner radius of single field (triple outer)
         radius_outer: Outer radius of single field (double inner)
-        angle_mid_deg: Middle angle of sector
+        angle_mid_deg: Middle angle of sector (OpenCV convention: 0° = right)
         number: Sector number to draw
         is_dark_background: True if background is dark (use light text)
 
@@ -140,8 +139,8 @@ def draw_sector_number(
     # Calculate position: midpoint between inner and outer radius
     radius_text = (radius_inner + radius_outer) / 2.0
 
-    # Convert angle to radians (0° = top, clockwise)
-    angle_rad = math.radians(angle_mid_deg - 90)  # -90 to start at top
+    # Convert angle to radians
+    angle_rad = math.radians(angle_mid_deg)
 
     # Calculate text position
     text_x = int(center[0] + radius_text * math.cos(angle_rad))
@@ -177,6 +176,11 @@ def draw_colored_dartboard_overlay(
     """
     Draw full colored dartboard overlay matching real dartboard colors.
 
+    Each SECTOR (pie slice) is colored individually:
+    - Sector 20 at top (12 o'clock) - starts dark/black
+    - Alternating dark/light for singles
+    - Alternating red/green for triples/doubles
+
     Args:
         img: Image to draw on (ROI frame)
         board_mapper: BoardMapper with calibration data
@@ -203,67 +207,82 @@ def draw_colored_dartboard_overlay(
     r_bull_inner = r_base * cfg.radii.r_bull_inner
 
     # Angle per sector (360° / 20 sectors = 18°)
-    angle_per_sector = 360.0 / 20.0
+    angle_per_sector = 18.0
 
-    # Starting angle offset (sector 20 at top)
-    angle_offset = calib.rotation_deg
+    # Starting angle: Sector 20 at top (12 o'clock)
+    # In OpenCV: 0° = right (3 o'clock), counter-clockwise
+    # 12 o'clock = 90° in OpenCV convention
+    # Sector boundaries at ±9° from sector center
+    # So sector 20 goes from 81° to 99° (centered at 90°)
 
     # Draw each sector
     for sector_idx, sector_num in enumerate(DARTBOARD_SECTORS):
-        # Calculate sector angles
-        angle_start = angle_offset + sector_idx * angle_per_sector
-        angle_end = angle_start + angle_per_sector
-        angle_mid = angle_start + angle_per_sector / 2.0
+        # Calculate sector angles (OpenCV convention: 0° = right, CCW)
+        # Sector 0 (20) centered at 90° (top)
+        # Sector 1 (1) centered at 90° - 18° = 72°
+        # etc.
+        angle_center = 90.0 - sector_idx * angle_per_sector  # CCW from top
+        angle_start = angle_center - 9.0  # Half sector width
+        angle_end = angle_center + 9.0
 
         # Determine colors (alternating pattern)
-        is_red = (sector_idx % 2 == 0)
+        # Sector 0 (20) = dark single, red triple/double
         is_dark_single = (sector_idx % 2 == 0)
+        is_red = (sector_idx % 2 == 0)
 
         triple_color = COLORS_BGR["triple_red"] if is_red else COLORS_BGR["triple_green"]
         double_color = COLORS_BGR["double_red"] if is_red else COLORS_BGR["double_green"]
         single_color = COLORS_BGR["single_dark"] if is_dark_single else COLORS_BGR["single_light"]
 
-        # Draw TRIPLE ring segment
-        draw_ring_segment(
-            img, (cx, cy),
-            r_triple_inner, r_triple_outer,
-            angle_start, angle_end,
-            triple_color, alpha
-        )
-
-        # Draw SINGLE field segment (between triple and double)
-        draw_ring_segment(
-            img, (cx, cy),
-            r_double_inner, r_triple_inner,
-            angle_start, angle_end,
-            single_color, alpha
-        )
-
-        # Draw DOUBLE ring segment
-        draw_ring_segment(
+        # Draw DOUBLE ring sector (outermost)
+        draw_filled_sector(
             img, (cx, cy),
             r_double_inner, r_double_outer,
             angle_start, angle_end,
             double_color, alpha
         )
 
-        # Draw sector number in single field
+        # Draw SINGLE field sector (between double and triple)
+        draw_filled_sector(
+            img, (cx, cy),
+            r_triple_outer, r_double_inner,
+            angle_start, angle_end,
+            single_color, alpha
+        )
+
+        # Draw TRIPLE ring sector
+        draw_filled_sector(
+            img, (cx, cy),
+            r_triple_inner, r_triple_outer,
+            angle_start, angle_end,
+            triple_color, alpha
+        )
+
+        # Draw INNER SINGLE (between triple and bullseye) - same color as outer single
+        draw_filled_sector(
+            img, (cx, cy),
+            r_bull_outer, r_triple_inner,
+            angle_start, angle_end,
+            single_color, alpha
+        )
+
+        # Draw sector number in OUTER single field
         if show_numbers:
             draw_sector_number(
                 img, (cx, cy),
-                r_triple_outer,  # Inner radius of single field
-                r_double_inner,  # Outer radius of single field
-                angle_mid,
+                r_triple_outer,  # Inner radius of outer single field
+                r_double_inner,  # Outer radius of outer single field
+                angle_center,
                 sector_num,
                 is_dark_single
             )
 
-    # Draw BULLSEYE (outer green ring)
+    # Draw BULLSEYE (outer green ring - 25 points)
     overlay_bull = img.copy()
     cv2.circle(overlay_bull, (cx, cy), int(r_bull_outer), COLORS_BGR["bull_outer"], -1, cv2.LINE_AA)
     cv2.addWeighted(overlay_bull, alpha, img, 1 - alpha, 0, img)
 
-    # Draw BULLSEYE (inner red circle)
+    # Draw BULLSEYE (inner red circle - 50 points)
     overlay_bull_inner = img.copy()
     cv2.circle(overlay_bull_inner, (cx, cy), int(r_bull_inner), COLORS_BGR["bull_inner"], -1, cv2.LINE_AA)
     cv2.addWeighted(overlay_bull_inner, alpha, img, 1 - alpha, 0, img)
