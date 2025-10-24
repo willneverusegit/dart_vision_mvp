@@ -410,12 +410,13 @@ class OverlayRenderer:
                     draw_calibration_guides
                 )
                 img[:] = draw_colored_dartboard_overlay(
-                    img, board_mapper, alpha=0.45, show_numbers=True
+                    img, board_mapper,
+                    calibration_mode=True,  # Uses config transparency
+                    show_numbers=True
                 )
-                # Add calibration guides
+                # Add calibration guides (uses config settings)
                 img[:] = draw_calibration_guides(
-                    img, (cx, cy), r_base,
-                    show_crosshair=True, show_circles=False
+                    img, (cx, cy), r_base
                 )
             else:
                 # Original detailed mapping (simple rings + sector labels)

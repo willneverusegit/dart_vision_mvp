@@ -7,44 +7,65 @@ Provides 1:1 visual representation of scoring zones for calibration:
 - Single fields: Alternating Dark/Light (Black/Cream) per sector
 - Bullseye: Inner Red (50pts), Outer Green (25pts)
 - Centered numbers in single fields
+
+All colors, transparency, and styling loaded from overlay_config.yaml.
 """
 
 import cv2
 import numpy as np
 import math
-from typing import Tuple, Optional, TYPE_CHECKING
+from typing import Tuple, Optional, TYPE_CHECKING, Dict, Any
 
 if TYPE_CHECKING:
     from src.board import BoardMapper
 
+from src.config.yaml_manager import get_config_manager
+
 # Standard dartboard sector arrangement (starting at top, clockwise)
+# Loaded from board.yaml at runtime, but hardcoded here for convenience
 DARTBOARD_SECTORS = [20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5]
 
-# Colors (BGR format for OpenCV) - matching real dartboard
-COLORS_BGR = {
-    # Triple ring (alternating red/green)
-    "triple_red": (0, 0, 200),
-    "triple_green": (0, 180, 0),
 
-    # Double ring (alternating red/green)
-    "double_red": (0, 0, 200),
-    "double_green": (0, 180, 0),
+# === CONFIGURATION HELPERS ===
 
-    # Single fields (alternating dark/light)
-    "single_dark": (20, 20, 20),        # Black
-    "single_light": (200, 220, 240),    # Cream/Beige
+def _get_overlay_config() -> Dict[str, Any]:
+    """Get overlay configuration from YAML."""
+    return get_config_manager().load_overlay_config()
 
-    # Bullseye
-    "bull_inner": (0, 0, 220),   # Red (50 points)
-    "bull_outer": (0, 200, 0),   # Green (25 points)
 
-    # Text colors
-    "text_on_dark": (240, 240, 240),
-    "text_on_light": (30, 30, 30),
-}
+def _get_colors() -> Dict[str, Tuple[int, int, int]]:
+    """
+    Get color definitions from overlay_config.yaml.
 
-# Default alpha (transparency)
-DEFAULT_ALPHA = 0.40
+    Returns:
+        Dictionary mapping color names to BGR tuples
+    """
+    config = _get_overlay_config()
+    colors_list = config.get('colors', {})
+
+    # Convert list format [B, G, R] to tuple (B, G, R)
+    return {
+        name: tuple(bgr) for name, bgr in colors_list.items()
+    }
+
+
+def _get_alpha(calibration_mode: bool = False) -> float:
+    """
+    Get transparency value from overlay_config.yaml.
+
+    Args:
+        calibration_mode: If True, use calibration mode transparency
+
+    Returns:
+        Alpha value (0.0-1.0)
+    """
+    config = _get_overlay_config()
+    transparency = config.get('transparency', {})
+
+    if calibration_mode:
+        return transparency.get('calibration_mode', 0.45)
+    else:
+        return transparency.get('dartboard_overlay', 0.40)
 
 
 def draw_filled_sector(
@@ -55,7 +76,7 @@ def draw_filled_sector(
     angle_start_deg: float,
     angle_end_deg: float,
     color: Tuple[int, int, int],
-    alpha: float = DEFAULT_ALPHA
+    alpha: float
 ) -> np.ndarray:
     """
     Draw a filled sector (pie slice) between two radii.
@@ -119,7 +140,8 @@ def draw_sector_number(
     radius_outer: float,
     angle_mid_deg: float,
     number: int,
-    is_dark_background: bool
+    is_dark_background: bool,
+    colors: Dict[str, Tuple[int, int, int]]
 ) -> np.ndarray:
     """
     Draw sector number centered in single field.
@@ -132,6 +154,7 @@ def draw_sector_number(
         angle_mid_deg: Middle angle of sector (OpenCV convention: 0° = right)
         number: Sector number to draw
         is_dark_background: True if background is dark (use light text)
+        colors: Color dictionary from config
 
     Returns:
         Image with number drawn
@@ -147,13 +170,19 @@ def draw_sector_number(
     text_y = int(center[1] + radius_text * math.sin(angle_rad))
 
     # Choose text color based on background
-    text_color = COLORS_BGR["text_on_dark"] if is_dark_background else COLORS_BGR["text_on_light"]
+    text_color = colors["text_on_dark"] if is_dark_background else colors["text_on_light"]
+
+    # Get text settings from config
+    config = _get_overlay_config()
+    text_cfg = config.get('text', {}).get('sector_numbers', {})
 
     # Measure text size for centering
     text = str(number)
     font = cv2.FONT_HERSHEY_SIMPLEX
-    font_scale = 0.7
-    thickness = 2
+    font_scale = text_cfg.get('font_scale', 0.7)
+    thickness = text_cfg.get('thickness', 2)
+    outline_thickness = text_cfg.get('outline_thickness', 4)
+
     (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
 
     # Center text
@@ -161,7 +190,7 @@ def draw_sector_number(
     text_y += text_height // 2
 
     # Draw text with outline for better visibility
-    cv2.putText(img, text, (text_x, text_y), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)  # Outline
+    cv2.putText(img, text, (text_x, text_y), font, font_scale, (0, 0, 0), outline_thickness, cv2.LINE_AA)  # Outline
     cv2.putText(img, text, (text_x, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)  # Text
 
     return img
@@ -170,8 +199,9 @@ def draw_sector_number(
 def draw_colored_dartboard_overlay(
     img: np.ndarray,
     board_mapper: 'BoardMapper',
-    alpha: float = DEFAULT_ALPHA,
-    show_numbers: bool = True
+    alpha: Optional[float] = None,
+    show_numbers: bool = True,
+    calibration_mode: bool = False
 ) -> np.ndarray:
     """
     Draw full colored dartboard overlay matching real dartboard colors.
@@ -181,15 +211,23 @@ def draw_colored_dartboard_overlay(
     - Alternating dark/light for singles
     - Alternating red/green for triples/doubles
 
+    All colors and settings loaded from overlay_config.yaml.
+
     Args:
         img: Image to draw on (ROI frame)
         board_mapper: BoardMapper with calibration data
-        alpha: Overall transparency (0.0-1.0)
+        alpha: Overall transparency (0.0-1.0). If None, uses config default.
         show_numbers: Whether to draw sector numbers
+        calibration_mode: If True, use calibration mode transparency
 
     Returns:
         Image with colored overlay
     """
+    # Load configuration
+    colors = _get_colors()
+    if alpha is None:
+        alpha = _get_alpha(calibration_mode)
+
     calib = board_mapper.calib
     cfg = board_mapper.cfg
 
@@ -230,9 +268,9 @@ def draw_colored_dartboard_overlay(
         is_dark_single = (sector_idx % 2 == 0)
         is_red = (sector_idx % 2 == 0)
 
-        triple_color = COLORS_BGR["triple_red"] if is_red else COLORS_BGR["triple_green"]
-        double_color = COLORS_BGR["double_red"] if is_red else COLORS_BGR["double_green"]
-        single_color = COLORS_BGR["single_dark"] if is_dark_single else COLORS_BGR["single_light"]
+        triple_color = colors["triple_red"] if is_red else colors["triple_green"]
+        double_color = colors["double_red"] if is_red else colors["double_green"]
+        single_color = colors["single_dark"] if is_dark_single else colors["single_light"]
 
         # Draw DOUBLE ring sector (outermost)
         draw_filled_sector(
@@ -274,17 +312,18 @@ def draw_colored_dartboard_overlay(
                 r_double_inner,  # Outer radius of outer single field
                 angle_center,
                 sector_num,
-                is_dark_single
+                is_dark_single,
+                colors
             )
 
     # Draw BULLSEYE (outer green ring - 25 points)
     overlay_bull = img.copy()
-    cv2.circle(overlay_bull, (cx, cy), int(r_bull_outer), COLORS_BGR["bull_outer"], -1, cv2.LINE_AA)
+    cv2.circle(overlay_bull, (cx, cy), int(r_bull_outer), colors["bull_outer"], -1, cv2.LINE_AA)
     cv2.addWeighted(overlay_bull, alpha, img, 1 - alpha, 0, img)
 
     # Draw BULLSEYE (inner red circle - 50 points)
     overlay_bull_inner = img.copy()
-    cv2.circle(overlay_bull_inner, (cx, cy), int(r_bull_inner), COLORS_BGR["bull_inner"], -1, cv2.LINE_AA)
+    cv2.circle(overlay_bull_inner, (cx, cy), int(r_bull_inner), colors["bull_inner"], -1, cv2.LINE_AA)
     cv2.addWeighted(overlay_bull_inner, alpha, img, 1 - alpha, 0, img)
 
     return img
@@ -294,28 +333,41 @@ def draw_calibration_guides(
     img: np.ndarray,
     center: Tuple[int, int],
     radius: float,
-    show_crosshair: bool = True,
-    show_circles: bool = True
+    show_crosshair: Optional[bool] = None,
+    show_circles: Optional[bool] = None
 ) -> np.ndarray:
     """
     Draw calibration guide overlays for precise alignment.
+
+    All settings loaded from overlay_config.yaml.
 
     Args:
         img: Image to draw on
         center: Center point (cx, cy)
         radius: Reference radius
-        show_crosshair: Show center crosshair
-        show_circles: Show concentric circles
+        show_crosshair: Show center crosshair (None = use config default)
+        show_circles: Show concentric circles (None = use config default)
 
     Returns:
         Image with guides
     """
+    # Load configuration
+    config = _get_overlay_config()
+    guide_cfg = config.get('calibration_guides', {})
+    colors = _get_colors()
+
+    # Use config defaults if not specified
+    if show_crosshair is None:
+        show_crosshair = guide_cfg.get('show_crosshair', True)
+    if show_circles is None:
+        show_circles = guide_cfg.get('show_circles', True)
+
     cx, cy = center
 
     # Crosshair at center
     if show_crosshair:
-        crosshair_size = 20
-        color_cross = (0, 255, 255)  # Cyan
+        crosshair_size = guide_cfg.get('crosshair_size', 20)
+        color_cross = colors.get('guide_crosshair', (0, 255, 255))
         thickness = 2
 
         # Horizontal line
@@ -328,8 +380,8 @@ def draw_calibration_guides(
 
     # Concentric circles for radius reference
     if show_circles:
-        color_circle = (100, 100, 255)  # Light red
-        radii = [0.25, 0.5, 0.75, 1.0]
+        color_circle = colors.get('guide_circles', (100, 100, 255))
+        radii = guide_cfg.get('circle_radii', [0.25, 0.5, 0.75, 1.0])
 
         for r_frac in radii:
             r = int(radius * r_frac)
