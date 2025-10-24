@@ -16,10 +16,10 @@ calibration:
     - 200.0
     roi_board_radius: 160.0
   overlay_adjust:
-    rotation_deg: 1.1827703820904294
-    r_outer_double_px: 183.9158741180196
-    center_dx_px: 0.0
-    center_dy_px: 0.0
+    rotation_deg: 19.5
+    r_outer_double_px: 182.09492486932632
+    center_dx_px: 1.0
+    center_dy_px: 1.0
   roi_adjust:
     tx_px: 0.0
     ty_px: 0.0

@@ -3,6 +3,7 @@ Visualization Helper - Simplified create_visualization using modular renderers.
 """
 
 import cv2
+import math
 import numpy as np
 from typing import Optional, TYPE_CHECKING
 
@@ -133,6 +134,46 @@ def create_visualization_refactored(
     if show_debug and dart_detector is not None:
         dart_config = dart_detector.config
 
+    motion_mask_ratio: Optional[float] = None
+    if fg_mask is not None:
+        mask = fg_mask
+        if mask.ndim == 3:
+            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        total = mask.size
+        if total:
+            motion_mask_ratio = float(np.count_nonzero(mask)) / float(total)
+
+    candidate_progress: Optional[float] = None
+    cooldown_count = 0
+    if dart_detector is not None:
+        config = getattr(dart_detector, "config", None)
+        confirm_frames = getattr(config, "confirmation_frames", None)
+        confirmation_count = getattr(dart_detector, "confirmation_count", None)
+        current_candidate = getattr(dart_detector, "current_candidate", None)
+        if (
+            current_candidate is not None
+            and isinstance(confirm_frames, (int, float))
+            and confirm_frames > 0
+            and isinstance(confirmation_count, (int, float))
+        ):
+            candidate_progress = max(
+                0.0,
+                min(1.0, float(confirmation_count) / float(confirm_frames))
+            )
+        cooldown_regions = getattr(dart_detector, "cooldown_regions", None)
+        if isinstance(cooldown_regions, list):
+            cooldown_count = len(cooldown_regions)
+
+    board_offset_px: Optional[float] = None
+    board_offset_pct: Optional[float] = None
+    if calibration is not None:
+        roi_cx, roi_cy = overlay_renderer.roi_center
+        dx = float(calibration.cx) - float(roi_cx)
+        dy = float(calibration.cy) - float(roi_cy)
+        board_offset_px = math.hypot(dx, dy)
+        if getattr(calibration, "r_outer_double_px", 0):
+            board_offset_pct = board_offset_px / float(calibration.r_outer_double_px)
+
     sidebar_selection = overlay_renderer.prepare_sidebar_cards(
         overlay_mode=overlay_mode,
         paused=paused,
@@ -145,6 +186,11 @@ def create_visualization_refactored(
         dart_config=dart_config,
         current_preset=current_preset,
         motion_detected=motion_detected,
+        motion_mask_ratio=motion_mask_ratio,
+        candidate_progress=candidate_progress,
+        cooldown_count=cooldown_count,
+        board_offset_px=board_offset_px,
+        board_offset_pct=board_offset_pct,
     )
 
     # ===== BOARD STATUS CHIPS (for sidebar) =====
@@ -170,12 +216,17 @@ def create_visualization_refactored(
         hud_renderer.draw_help_overlay(disp_roi)
 
     # ===== COMPOSE CANVAS =====
+    prefer_fast_blend = (
+        overlay_mode == OVERLAY_MIN and not overlay_renderer.cards_enabled()
+    )
+
     canvas = overlay_renderer.compose_canvas(
         disp_main,
         disp_roi,
         paused=paused,
         roi_top_cards=sidebar_selection.roi_top_cards,
         roi_bottom_cards=sidebar_selection.roi_bottom_cards,
+        fast_blend=prefer_fast_blend,
     )
 
     should_draw_sidebar = (

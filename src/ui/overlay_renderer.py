@@ -337,25 +337,92 @@ class OverlayRenderer:
         if not cards or self._roi_panel_tl is None or self._roi_panel_br is None:
             return
 
-        x = self._roi_panel_tl[0] + 16
-        max_width = max(140, self.roi_size[0] - 32)
+        margin_x = 16
+        margin_y = 12
+        max_width = max(140, self.roi_size[0] - 2 * margin_x)
         card_width = min(max_width, 280)
         card_gap = 14
 
-        prepared: List[dict] = []
-        total_height = 0
-        for payload in cards:
-            layout = self._card_drawer.prepare_card(card_width, payload.title, payload.rows, footer=payload.footer)
-            prepared.append({"layout": layout, "payload": payload})
-            total_height += int(layout.get("height", 0))
-        if prepared:
-            total_height += card_gap * (len(prepared) - 1)
+        def _prepare(width: int, gap: int) -> Tuple[List[dict], int]:
+            prepared_cards: List[dict] = []
+            height_acc = 0
+            for payload in cards:
+                layout = self._card_drawer.prepare_card(
+                    width, payload.title, payload.rows, footer=payload.footer
+                )
+                prepared_cards.append({"layout": layout, "payload": payload})
+                height_acc += int(layout.get("height", 0))
+            if prepared_cards:
+                height_acc += gap * (len(prepared_cards) - 1)
+            return prepared_cards, height_acc
+
+        def _stack_height(items: List[dict], gap: int) -> int:
+            if not items:
+                return 0
+            height_sum = sum(int(item["layout"].get("height", 0)) for item in items)
+            if len(items) > 1:
+                height_sum += gap * (len(items) - 1)
+            return height_sum
+
+        prepared, total_height = _prepare(card_width, card_gap)
+
+        available_height = 0
+        if anchor == "top":
+            available_height = max(0, self._roi_panel_tl[1] - margin_y)
+        else:
+            available_height = max(0, self.canvas_size[1] - self._roi_panel_br[1] - margin_y)
+
+        if available_height and total_height > available_height:
+            min_width = max(140, int(max_width * 0.65))
+            best_prepared = prepared
+            best_total = total_height
+            best_width = card_width
+            width = card_width
+            while width > min_width:
+                width = max(min_width, width - 20)
+                candidate_prepared, candidate_total = _prepare(width, card_gap)
+                if candidate_total < best_total:
+                    best_prepared = candidate_prepared
+                    best_total = candidate_total
+                    best_width = width
+                if candidate_total <= available_height:
+                    prepared = candidate_prepared
+                    total_height = candidate_total
+                    card_width = width
+                    break
+            else:
+                prepared = best_prepared
+                total_height = best_total
+                card_width = best_width
+
+            if total_height > available_height and len(prepared) > 1:
+                tighter_gap = max(6, card_gap - 6)
+                candidate_prepared, candidate_total = _prepare(card_width, tighter_gap)
+                if candidate_total <= total_height:
+                    prepared = candidate_prepared
+                    total_height = candidate_total
+                    card_gap = tighter_gap
+
+        total_height = _stack_height(prepared, card_gap)
+        if available_height and total_height > available_height:
+            trimmed = list(prepared)
+            trimmed_height = _stack_height(trimmed, card_gap)
+            while len(trimmed) > 1 and trimmed_height > available_height:
+                trimmed.pop()
+                trimmed_height = _stack_height(trimmed, card_gap)
+            prepared = trimmed
+            total_height = trimmed_height
 
         if anchor == "top":
-            y_start = max(12, self._roi_panel_tl[1] - total_height - 12)
+            y_start = max(margin_y, self._roi_panel_tl[1] - total_height - margin_y)
         else:
-            y_start = self._roi_panel_br[1] + 12
-            y_start = min(y_start, self.canvas_size[1] - total_height - 12)
+            y_start = self._roi_panel_br[1] + margin_y
+            max_start = max(margin_y, self.canvas_size[1] - total_height - margin_y)
+            y_start = min(y_start, max_start)
+
+        max_x = self.canvas_size[0] - card_width - margin_x
+        x = max(self._roi_panel_tl[0] + margin_x, self._roi_panel_br[0] - card_width - margin_x)
+        x = min(x, max_x)
 
         y = y_start
         for item in prepared:
@@ -596,6 +663,11 @@ class OverlayRenderer:
         dart_config: Optional[object] = None,
         current_preset: str = "balanced",
         motion_detected: bool = False,
+        motion_mask_ratio: Optional[float] = None,
+        candidate_progress: Optional[float] = None,
+        cooldown_count: int = 0,
+        board_offset_px: Optional[float] = None,
+        board_offset_pct: Optional[float] = None,
     ) -> HudSidebarSelection:
         """Resolve sidebar cards for the current frame."""
 
@@ -609,6 +681,11 @@ class OverlayRenderer:
             motion_enabled=show_motion,
             motion_detected=motion_detected,
             debug_enabled=show_debug,
+            motion_mask_ratio=motion_mask_ratio,
+            candidate_progress=candidate_progress,
+            cooldown_count=cooldown_count,
+            board_offset_px=board_offset_px,
+            board_offset_pct=board_offset_pct,
         )
 
         selection = self.card_manager.for_state(
@@ -830,6 +907,7 @@ class OverlayRenderer:
         paused: bool = False,
         roi_top_cards: Optional[List[HudCardPayload]] = None,
         roi_bottom_cards: Optional[List[HudCardPayload]] = None,
+        fast_blend: bool = False,
     ) -> np.ndarray:
         """
         Compose final canvas with main and ROI panels.
@@ -840,6 +918,7 @@ class OverlayRenderer:
             paused: Whether system is paused
             roi_top_cards: Cards to pin above the ROI panel
             roi_bottom_cards: Cards to pin below the ROI panel
+            fast_blend: If True, skip glass blending for speed
 
         Returns:
             Final composed canvas
@@ -851,11 +930,15 @@ class OverlayRenderer:
         if roi_panel.shape[0:2] != (self.roi_size[1], self.roi_size[0]):
             roi_panel = cv2.resize(roi_panel, self.roi_size)
 
-        main_region = canvas[self._main_slice]
-        canvas[self._main_slice] = cv2.addWeighted(main_panel, 0.92, main_region, 0.08, 0)
+        if fast_blend:
+            canvas[self._main_slice] = main_panel
+            canvas[self._roi_slice] = roi_panel
+        else:
+            main_region = canvas[self._main_slice]
+            canvas[self._main_slice] = cv2.addWeighted(main_panel, 0.92, main_region, 0.08, 0)
 
-        roi_region = canvas[self._roi_slice]
-        canvas[self._roi_slice] = cv2.addWeighted(roi_panel, 0.92, roi_region, 0.08, 0)
+            roi_region = canvas[self._roi_slice]
+            canvas[self._roi_slice] = cv2.addWeighted(roi_panel, 0.92, roi_region, 0.08, 0)
 
         self._draw_panel_border(canvas, self._main_panel_tl, self._main_panel_br)
         self._draw_panel_border(canvas, self._roi_panel_tl, self._roi_panel_br)

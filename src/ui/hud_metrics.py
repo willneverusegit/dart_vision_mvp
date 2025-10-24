@@ -102,6 +102,11 @@ class HudCardData:
     motion_enabled: bool = False
     motion_detected: bool = False
     debug_enabled: bool = False
+    motion_mask_ratio: Optional[float] = None
+    candidate_progress: Optional[float] = None
+    cooldown_count: int = 0
+    board_offset_px: Optional[float] = None
+    board_offset_pct: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -219,14 +224,40 @@ def _build_game_card(data: HudCardData) -> Optional[HudCardPayload]:
         }
     )
 
+    offset_pct = float(data.board_offset_pct or 0.0)
+    if data.board_offset_px is not None:
+        offset_px = float(data.board_offset_px)
+        if offset_pct <= 0.03:
+            offset_status = "good"
+        elif offset_pct <= 0.06:
+            offset_status = "warn"
+        else:
+            offset_status = "bad"
+        rows.append(
+            {
+                "label": "Board center",
+                "value": f"{offset_px:.1f} px",
+                "status": offset_status,
+                "hint": f"{offset_pct * 100:.1f}% of radius",
+            }
+        )
+
     footer_text = data.last_msg if data.last_msg else "Goal: reliable hit detection & scoring."
+
+    card_status = "good"
+    if getattr(game, "done", False):
+        card_status = "accent"
+    if data.board_offset_px is not None and offset_pct > 0.06:
+        card_status = "bad"
+    elif data.board_offset_px is not None and offset_pct > 0.03 and card_status != "bad":
+        card_status = "warn"
 
     return HudCardPayload(
         key="game",
         title="Game State",
         rows=rows,
         footer=footer_text,
-        status="accent",
+        status=card_status,
     )
 
 
@@ -321,6 +352,54 @@ def _build_motion_card(data: HudCardData) -> Optional[HudCardPayload]:
         }
     )
 
+    ratio_status: Optional[str] = None
+    if isinstance(data.motion_mask_ratio, (int, float)):
+        ratio_pct = max(0.0, float(data.motion_mask_ratio) * 100.0)
+        if ratio_pct < 0.7:
+            ratio_status = "bad"
+            ratio_hint = "Mask too thin – raise gain"
+        elif ratio_pct <= 6.0:
+            ratio_status = "good"
+            ratio_hint = "Sweet spot for crisp hits"
+        elif ratio_pct <= 12.0:
+            ratio_status = "warn"
+            ratio_hint = "Mask getting noisy"
+        else:
+            ratio_status = "bad"
+            ratio_hint = "Mask saturated – lower sensitivity"
+        rows.append(
+            {
+                "label": "Mask fill",
+                "value": f"{ratio_pct:.1f}%",
+                "status": ratio_status,
+                "hint": ratio_hint,
+            }
+        )
+
+    if isinstance(data.candidate_progress, (int, float)):
+        progress = max(0.0, min(1.0, float(data.candidate_progress)))
+        progress_pct = progress * 100.0
+        progress_status = "accent" if progress_pct < 100.0 else "good"
+        rows.append(
+            {
+                "label": "Candidate",
+                "value": f"{progress_pct:.0f}%",
+                "status": progress_status,
+                "hint": "Frames confirming current hit",
+            }
+        )
+
+    if data.cooldown_count:
+        cooldown_status = "warn" if data.cooldown_count >= 3 else "info"
+        rows.append(
+            {
+                "label": "Cooldowns",
+                "value": str(int(data.cooldown_count)),
+                "status": cooldown_status,
+                "hint": "Active impact lockouts",
+            }
+        )
+
     if has_config:
         motion_parts: List[str] = []
         bias = getattr(data.dart_config, "motion_otsu_bias", None)
@@ -346,6 +425,12 @@ def _build_motion_card(data: HudCardData) -> Optional[HudCardPayload]:
 
     footer = "Keep motion stable to lock hits."
     status = "accent" if data.motion_enabled else "info"
+    if ratio_status == "warn" and status != "bad":
+        status = "warn"
+    if ratio_status == "bad":
+        status = "bad"
+    if data.cooldown_count >= 3 and status not in ("bad",):
+        status = "warn"
 
     return HudCardPayload(
         key="motion",
@@ -438,6 +523,11 @@ class CardManager:
             motion_enabled=bool(motion_enabled),
             motion_detected=hud_data.motion_detected if hud_data else False,
             debug_enabled=bool(debug_enabled),
+            motion_mask_ratio=hud_data.motion_mask_ratio if hud_data else None,
+            candidate_progress=hud_data.candidate_progress if hud_data else None,
+            cooldown_count=hud_data.cooldown_count if hud_data else 0,
+            board_offset_px=hud_data.board_offset_px if hud_data else None,
+            board_offset_pct=hud_data.board_offset_pct if hud_data else None,
         )
 
         active_modes = []
