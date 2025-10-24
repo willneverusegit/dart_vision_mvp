@@ -1,0 +1,73 @@
+version: 1
+colors:
+  triple_red:
+  - 0
+  - 0
+  - 200
+  triple_green:
+  - 0
+  - 180
+  - 0
+  double_red:
+  - 0
+  - 0
+  - 200
+  double_green:
+  - 0
+  - 180
+  - 0
+  single_dark:
+  - 20
+  - 20
+  - 20
+  single_light:
+  - 200
+  - 220
+  - 240
+  bull_inner:
+  - 0
+  - 0
+  - 220
+  bull_outer:
+  - 0
+  - 200
+  - 0
+  text_on_dark:
+  - 240
+  - 240
+  - 240
+  text_on_light:
+  - 30
+  - 30
+  - 30
+  guide_crosshair:
+  - 0
+  - 255
+  - 255
+  guide_circles:
+  - 100
+  - 100
+  - 255
+transparency:
+  dartboard_overlay: 0.4
+  calibration_mode: 0.45
+text:
+  sector_numbers:
+    font: FONT_HERSHEY_SIMPLEX
+    font_scale: 0.7
+    thickness: 2
+    outline_thickness: 4
+    show_in_calibration: true
+    show_in_normal: true
+calibration_guides:
+  show_crosshair: true
+  show_circles: true
+  crosshair_size: 20
+  circle_radii:
+  - 0.25
+  - 0.5
+  - 0.75
+  - 1.0
+sectors:
+  num_arc_points: 10
+  use_antialiasing: true

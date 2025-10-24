@@ -61,8 +61,11 @@ def load_unified_calibration(path: Path) -> Optional[UnifiedCalibration]:
 
 def save_unified_calibration(path: Path, uc: UnifiedCalibration) -> None:
     """
-    Persist unified calibration. Always writes homography/metrics and both adjust-blocks.
+    Persist unified calibration using atomic write.
+    Always writes homography/metrics and both adjust-blocks.
     """
+    from src.config.yaml_manager import atomic_write_yaml
+
     payload = {
         "calibration": {
             "homography": uc.homography.model_dump(),
@@ -72,8 +75,7 @@ def save_unified_calibration(path: Path, uc: UnifiedCalibration) -> None:
         }
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(payload, f, sort_keys=False, allow_unicode=True)
+    atomic_write_yaml(path, payload)
 
 
 def compute_effective_H(uc: UnifiedCalibration) -> np.ndarray:
@@ -118,11 +120,13 @@ def _deep_to_serializable(x: Any):
     return x
 
 def save_calibration_yaml(path: str, data: Dict[str, Any]) -> None:
+    """Save calibration data using atomic write."""
+    from src.config.yaml_manager import atomic_write_yaml
+
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     serializable = _deep_to_serializable(data)
-    with p.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(serializable, f, sort_keys=False, allow_unicode=True)
+    atomic_write_yaml(p, serializable)
 
 def load_calibration_yaml(path: str) -> Dict[str, Any]:
     p = Path(path)
