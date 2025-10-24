@@ -167,6 +167,7 @@ class DartVisionApp:
         self.session_start = time.time()
         self.show_mask = False  # per Hotkey toggeln
         self.show_mask_debug = False
+        self.game_mode = True  # Game mode on/off (when off, no overlay)
 
         # UI Components (refactored)
         self.hud_renderer = HUDRenderer(smoothing_window=15)
@@ -695,6 +696,9 @@ class DartVisionApp:
 
             # Board calibration mode
             board_calibration_mode=self.board_calibration_mode,
+
+            # Game mode
+            game_mode=self.game_mode,
 
             # CLAHE flag
             use_clahe=getattr(self.args, "clahe", False)

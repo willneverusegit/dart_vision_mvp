@@ -62,6 +62,9 @@ def create_visualization_refactored(
     # Board calibration mode (new)
     board_calibration_mode: bool = False,
 
+    # Game mode (on/off)
+    game_mode: bool = True,
+
     # CLAHE flag
     use_clahe: bool = False
 ) -> np.ndarray:
@@ -70,16 +73,12 @@ def create_visualization_refactored(
 
     Replaces the monolithic 200+ line create_visualization method.
     """
-    from src.ui.overlay_renderer import OVERLAY_FULL, OVERLAY_ALIGN
+    from src.ui.overlay_renderer import OVERLAY_FULL, OVERLAY_ALIGN, OVERLAY_MIN
 
     # ===== MAIN PANEL =====
+    # Note: hud_metrics (brightness/focus/edge) are NOT computed here
+    # They are only shown in ROI calibration mode (via calibration_ui_manager)
     hud_metrics = None
-    if overlay_mode == OVERLAY_FULL:
-        gray_main = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if use_clahe:
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray_main = clahe.apply(gray_main)
-        hud_metrics = hud_renderer.compute_metrics(gray_main)
 
     disp_main = overlay_renderer.render_main_panel(
         frame,
@@ -97,10 +96,12 @@ def create_visualization_refactored(
     )
 
     # ===== BOARD RINGS & OVERLAYS =====
+    # Only show overlay when game mode is ON (unless in board calibration mode)
+    effective_overlay_mode = overlay_mode if (game_mode or board_calibration_mode) else OVERLAY_MIN
     disp_roi = overlay_renderer.render_overlay_rings(
         disp_roi,
         calibration,
-        overlay_mode,
+        effective_overlay_mode,
         board_mapper,
         board_cfg,
         board_calibration_mode
@@ -148,11 +149,12 @@ def create_visualization_refactored(
 
     # ===== BOARD STATUS CHIPS (for sidebar) =====
     board_status_chips = overlay_renderer.build_board_status_chips(
-        overlay_mode=overlay_mode,
+        overlay_mode=effective_overlay_mode,
         calibration=calibration,
         unified_calibration=unified_calibration,
         current_preset=current_preset,
-        align_auto=align_auto
+        align_auto=align_auto,
+        board_calibration_mode=board_calibration_mode
     )
 
     # ===== OVERLAY STATUS (minimal mode badge in ROI) =====

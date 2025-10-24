@@ -572,7 +572,8 @@ class OverlayRenderer:
         calibration: Optional['Calibration'] = None,
         unified_calibration: Optional[object] = None,
         current_preset: str = "balanced",
-        align_auto: bool = False
+        align_auto: bool = False,
+        board_calibration_mode: bool = False
     ) -> List[MetricChip]:
         """
         Build board status chips for sidebar display.
@@ -583,6 +584,7 @@ class OverlayRenderer:
             unified_calibration: UnifiedCalibration object for scale calculation
             current_preset: Current detector preset name
             align_auto: Auto-align status (ALIGN mode)
+            board_calibration_mode: If True, show rotation/scale chips (board calibration mode)
 
         Returns:
             List of MetricChip objects
@@ -615,7 +617,8 @@ class OverlayRenderer:
             )
         ]
 
-        if calibration is not None:
+        # Rotation and Scale chips only shown in board calibration mode
+        if calibration is not None and board_calibration_mode:
             rotation = float(getattr(calibration, "rotation_deg", 0.0))
             abs_rot = abs(rotation)
             if abs_rot <= 1.0:

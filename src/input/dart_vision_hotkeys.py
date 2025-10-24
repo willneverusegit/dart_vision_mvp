@@ -214,6 +214,13 @@ class DartVisionHotkeys:
         """Game control hotkeys."""
         self.handler.register(
             ord('g'),
+            self._toggle_game_mode,
+            "Toggle game mode on/off",
+            HotkeyCategory.GAME
+        )
+
+        self.handler.register(
+            ord('G'),  # Shift+G
             self._reset_game,
             "Reset game",
             HotkeyCategory.GAME
@@ -232,6 +239,12 @@ class DartVisionHotkeys:
             "Clear dart impacts",
             HotkeyCategory.GAME
         )
+
+    def _toggle_game_mode(self):
+        """Toggle game mode on/off."""
+        self.app.game_mode = not self.app.game_mode
+        status = "ON" if self.app.game_mode else "OFF"
+        logger.info(f"[GAME] Game mode {status}")
 
     def _reset_game(self):
         """Reset current game."""
