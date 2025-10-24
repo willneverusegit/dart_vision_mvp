@@ -32,7 +32,6 @@ from .dart_impact_detector import (
 )
 
 # Refactored Motion Detection
-from .motion_detector_refactored import MotionDetectorRefactored
 from .background_subtractor import BackgroundSubtractor
 from .adaptive_threshold import AdaptiveThreshold
 from .motion_filter import MotionFilter
@@ -64,7 +63,6 @@ __all__ = [
     "DartCandidate",
     "apply_detector_preset",
     # Refactored Motion
-    "MotionDetectorRefactored",
     "BackgroundSubtractor",
     "AdaptiveThreshold",
     "MotionFilter",

@@ -170,7 +170,13 @@ def create_visualization_refactored(
         hud_renderer.draw_help_overlay(disp_roi)
 
     # ===== COMPOSE CANVAS =====
-    canvas = overlay_renderer.compose_canvas(disp_main, disp_roi, paused=paused)
+    canvas = overlay_renderer.compose_canvas(
+        disp_main,
+        disp_roi,
+        paused=paused,
+        roi_top_cards=sidebar_selection.roi_top_cards,
+        roi_bottom_cards=sidebar_selection.roi_bottom_cards,
+    )
 
     should_draw_sidebar = (
         hud_metrics is not None

@@ -112,6 +112,7 @@ class OverlayRenderer:
         self._chip_drawer = ChipDrawer(self._typography)
         self._card_drawer = CardDrawer(self._typography)
         self.card_manager = CardManager(full_mode_values=(OVERLAY_FULL,))
+        self._cards_enabled = True
 
     def _build_canvas_background(self) -> np.ndarray:
         """Precompute the gradient canvas with glass panels."""
@@ -325,6 +326,44 @@ class OverlayRenderer:
 
         return canvas
 
+    def _draw_roi_card_stack(
+        self,
+        canvas: np.ndarray,
+        cards: List[HudCardPayload],
+        anchor: str,
+    ) -> None:
+        """Draw a compact stack of cards above or below the ROI panel."""
+
+        if not cards or self._roi_panel_tl is None or self._roi_panel_br is None:
+            return
+
+        x = self._roi_panel_tl[0] + 16
+        max_width = max(140, self.roi_size[0] - 32)
+        card_width = min(max_width, 280)
+        card_gap = 14
+
+        prepared: List[dict] = []
+        total_height = 0
+        for payload in cards:
+            layout = self._card_drawer.prepare_card(card_width, payload.title, payload.rows, footer=payload.footer)
+            prepared.append({"layout": layout, "payload": payload})
+            total_height += int(layout.get("height", 0))
+        if prepared:
+            total_height += card_gap * (len(prepared) - 1)
+
+        if anchor == "top":
+            y_start = max(12, self._roi_panel_tl[1] - total_height - 12)
+        else:
+            y_start = self._roi_panel_br[1] + 12
+            y_start = min(y_start, self.canvas_size[1] - total_height - 12)
+
+        y = y_start
+        for item in prepared:
+            layout = item["layout"]
+            payload = item["payload"]
+            self._card_drawer.draw_card(canvas, (x, y), layout, status=payload.status)
+            y += int(layout.get("height", 0)) + card_gap
+
     def render_roi_base(
         self,
         roi_frame: np.ndarray,
@@ -528,6 +567,22 @@ class OverlayRenderer:
 
         return img
 
+    def cards_enabled(self) -> bool:
+        """Return whether HUD cards are currently visible."""
+
+        return self._cards_enabled
+
+    def set_cards_enabled(self, enabled: bool) -> None:
+        """Enable or disable all HUD cards (sidebar and pinned)."""
+
+        self._cards_enabled = bool(enabled)
+
+    def toggle_cards_enabled(self) -> bool:
+        """Toggle HUD cards on/off and return the new state."""
+
+        self._cards_enabled = not self._cards_enabled
+        return self._cards_enabled
+
     def prepare_sidebar_cards(
         self,
         overlay_mode: int,
@@ -563,6 +618,15 @@ class OverlayRenderer:
             overlay_mode=overlay_mode,
             hud_data=hud_data,
         )
+
+        if not self._cards_enabled:
+            return HudSidebarSelection(
+                cards=[],
+                mode=None,
+                mode_chips=[],
+                roi_top_cards=[],
+                roi_bottom_cards=[],
+            )
 
         return selection
 
@@ -763,7 +827,9 @@ class OverlayRenderer:
         self,
         main_panel: np.ndarray,
         roi_panel: np.ndarray,
-        paused: bool = False
+        paused: bool = False,
+        roi_top_cards: Optional[List[HudCardPayload]] = None,
+        roi_bottom_cards: Optional[List[HudCardPayload]] = None,
     ) -> np.ndarray:
         """
         Compose final canvas with main and ROI panels.
@@ -772,6 +838,8 @@ class OverlayRenderer:
             main_panel: Main camera view
             roi_panel: ROI panel
             paused: Whether system is paused
+            roi_top_cards: Cards to pin above the ROI panel
+            roi_bottom_cards: Cards to pin below the ROI panel
 
         Returns:
             Final composed canvas
@@ -797,6 +865,11 @@ class OverlayRenderer:
             and self.sidebar_width > 0
         ):
             self._draw_panel_border(canvas, self._sidebar_panel_tl, self._sidebar_panel_br)
+
+        if roi_top_cards:
+            self._draw_roi_card_stack(canvas, roi_top_cards, anchor="top")
+        if roi_bottom_cards:
+            self._draw_roi_card_stack(canvas, roi_bottom_cards, anchor="bottom")
 
         if paused:
             cv2.putText(

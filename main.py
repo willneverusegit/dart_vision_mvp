@@ -704,6 +704,16 @@ class DartVisionApp:
             use_clahe=getattr(self.args, "clahe", False)
         )
 
+    def toggle_hud_cards(self) -> None:
+        """Toggle visibility of all HUD cards (sidebar and ROI)."""
+
+        if self.overlay_renderer is None:
+            return
+        enabled = self.overlay_renderer.toggle_cards_enabled()
+        state = "ON" if enabled else "OFF"
+        logger.info(f"[HUD] cards {state}")
+        self.last_msg = f"HUD cards {state}"
+
     # ----- Run loop -----
     def run(self):
         if not self.setup():

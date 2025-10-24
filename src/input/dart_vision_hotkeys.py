@@ -185,6 +185,13 @@ class DartVisionHotkeys:
             HotkeyCategory.OVERLAY
         )
 
+        self.handler.register(
+            ord('0'),
+            self._toggle_hud_cards,
+            "Toggle HUD cards",
+            HotkeyCategory.OVERLAY
+        )
+
     def _cycle_overlay_mode(self):
         """Cycle through overlay modes."""
         from src.ui.overlay_renderer import OVERLAY_MIN, OVERLAY_RINGS, OVERLAY_FULL, OVERLAY_ALIGN
@@ -208,6 +215,12 @@ class DartVisionHotkeys:
         """Save overlay adjustments to calibration file."""
         self.app._save_calibration_unified()
         logger.info("[OVERLAY] saved adjustments")
+
+    def _toggle_hud_cards(self):
+        """Toggle HUD cards via the app."""
+
+        if hasattr(self.app, "toggle_hud_cards"):
+            self.app.toggle_hud_cards()
 
     # ========== GAME ==========
     def _setup_game_hotkeys(self):

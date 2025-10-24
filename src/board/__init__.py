@@ -5,5 +5,4 @@ from .dartboard_colored_overlay import (
     draw_colored_dartboard_overlay,
     draw_calibration_guides,
     DARTBOARD_SECTORS,
-    COLORS_BGR,
 )

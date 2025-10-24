@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Dict, Iterable, List, Optional, Tuple, TYPE_CHECKING
 
@@ -81,6 +81,14 @@ class HudCardMode(Enum):
     FULL = "full"
 
 
+class HudCardPlacement(Enum):
+    """Target location for rendering a HUD card."""
+
+    SIDEBAR = "sidebar"
+    ROI_TOP = "roi_top"
+    ROI_BOTTOM = "roi_bottom"
+
+
 @dataclass
 class HudCardData:
     """Runtime data needed to populate HUD cards."""
@@ -115,6 +123,7 @@ class HudCardDefinition:
     modes: Tuple[HudCardMode, ...]
     builder: Callable[[HudCardData], Optional[HudCardPayload]]
     default_active: bool = True
+    placement: HudCardPlacement = HudCardPlacement.SIDEBAR
 
 
 @dataclass(frozen=True)
@@ -124,6 +133,8 @@ class HudSidebarSelection:
     cards: List[HudCardPayload]
     mode: Optional[HudCardMode]
     mode_chips: List[MetricChip]
+    roi_top_cards: List[HudCardPayload] = field(default_factory=list)
+    roi_bottom_cards: List[HudCardPayload] = field(default_factory=list)
 
 
 MODE_ORDER: Tuple[HudCardMode, ...] = (
@@ -351,12 +362,14 @@ DEFAULT_CARD_DEFINITIONS: Tuple[HudCardDefinition, ...] = (
         modes=(HudCardMode.GAME, HudCardMode.FULL),
         builder=_build_game_card,
         default_active=True,
+        placement=HudCardPlacement.ROI_TOP,
     ),
     HudCardDefinition(
         key="motion",
         modes=(HudCardMode.MOTION, HudCardMode.DEBUG, HudCardMode.FULL),
         builder=_build_motion_card,
         default_active=True,
+        placement=HudCardPlacement.ROI_BOTTOM,
     ),
     HudCardDefinition(
         key="debug",
@@ -451,21 +464,40 @@ class CardManager:
 
         if not self._available_modes:
             self._current_mode = None
-            return HudSidebarSelection(cards=[], mode=None, mode_chips=self._build_mode_chips(None))
+            return HudSidebarSelection(
+                cards=[],
+                mode=None,
+                mode_chips=self._build_mode_chips(None),
+                roi_top_cards=[],
+                roi_bottom_cards=[],
+            )
 
         if self._current_mode not in self._available_modes:
             self._current_mode = self._available_modes[0]
 
-        cards: List[HudCardPayload] = []
+        sidebar_cards: List[HudCardPayload] = []
+        roi_top_cards: List[HudCardPayload] = []
+        roi_bottom_cards: List[HudCardPayload] = []
         for definition in self._definitions:
             if self._current_mode not in definition.modes:
                 continue
             payload = definition.builder(data)
             if payload is not None:
-                cards.append(payload)
+                if definition.placement == HudCardPlacement.ROI_TOP:
+                    roi_top_cards.append(payload)
+                elif definition.placement == HudCardPlacement.ROI_BOTTOM:
+                    roi_bottom_cards.append(payload)
+                else:
+                    sidebar_cards.append(payload)
 
         chips = self._build_mode_chips(self._current_mode)
-        return HudSidebarSelection(cards=cards, mode=self._current_mode, mode_chips=chips)
+        return HudSidebarSelection(
+            cards=sidebar_cards,
+            mode=self._current_mode,
+            mode_chips=chips,
+            roi_top_cards=roi_top_cards,
+            roi_bottom_cards=roi_bottom_cards,
+        )
 
     def _build_mode_chips(self, selected: Optional[HudCardMode]) -> List[MetricChip]:
         chips: List[MetricChip] = []
