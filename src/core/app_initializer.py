@@ -15,17 +15,19 @@ import yaml
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
+import time
 
 import cv2
 
 from src.capture import ThreadedCamera, CameraConfig, FPSCounter
 from src.calibration.roi_processor import ROIProcessor, ROIConfig
 from src.vision import (
-    MotionDetector, MotionConfig,
-    DartImpactDetector, DartDetectorConfig,
+    MotionDetector,
+    DartImpactDetector,
     FieldMapper, FieldMapperConfig
 )
-from src.vision.dart_impact_detector import apply_detector_preset
+from src.vision.detector_config_manager import DetectorConfigManager
+from src.vision.environment_optimizer import EnvironmentOptimizer
 from src.board import BoardConfig, BoardMapper, Calibration
 from src.overlay.heatmap import HeatmapAccumulator
 from src.analytics.polar_heatmap import PolarHeatmap
@@ -58,6 +60,8 @@ class AppInitializer:
         self.app = app
         self.args = args
         self.logger = logging.getLogger("AppInitializer")
+        self.detector_manager = DetectorConfigManager(Path(getattr(args, "detector_config", "config/detectors.yaml")))
+        self.environment_optimizer = EnvironmentOptimizer()
 
     def initialize(self) -> bool:
         """
@@ -253,25 +257,34 @@ class AppInitializer:
 
     def _init_vision_modules(self):
         """Initialize motion detector, dart detector, field mapper, and FPS counter."""
-        # Motion detector
-        self.app.motion = MotionDetector(
-            MotionConfig(
-                var_threshold=self.args.motion_threshold,
-                motion_pixel_threshold=self.args.motion_pixels,
-                detect_shadows=True
-            )
+        motion_cfg, dart_cfg = self.detector_manager.get_configs()
+
+        overrides_applied = False
+        if getattr(self.args, "motion_threshold", None) is not None:
+            motion_cfg.var_threshold = int(self.args.motion_threshold)
+            overrides_applied = True
+        if getattr(self.args, "motion_pixels", None) is not None:
+            motion_cfg.motion_pixel_threshold = int(self.args.motion_pixels)
+            overrides_applied = True
+        if getattr(self.args, "confirmation_frames", None) is not None:
+            dart_cfg.confirmation_frames = int(self.args.confirmation_frames)
+            overrides_applied = True
+
+        dart_cfg = self.detector_manager.apply_preset(
+            dart_cfg, getattr(self.args, "detector_preset", None)
         )
 
-        # Dart detector with preset
-        base_cfg = DartDetectorConfig(
-            confirmation_frames=self.args.confirmation_frames,
-            position_tolerance_px=20,
-            min_area=10,
-            max_area=1000,  # Overridden by preset
-        )
-        det_cfg = apply_detector_preset(base_cfg, self.args.detector_preset)
-        self.app.dart = DartImpactDetector(det_cfg)
-        self.app.current_preset = self.args.detector_preset
+        self.app.motion = MotionDetector(motion_cfg)
+        self.app.dart = DartImpactDetector(dart_cfg)
+        self.app.current_preset = getattr(self.args, "detector_preset", None)
+
+        if overrides_applied:
+            self.logger.info("[CONFIG] CLI overrides active (not persisted).")
+
+        self.app.detector_manager = self.detector_manager
+
+        # Record active profile if already optimized elsewhere
+        self.app.environment_profile = None
 
         # Field mapper
         self.app.mapper = FieldMapper(FieldMapperConfig())
@@ -315,7 +328,41 @@ class AppInitializer:
                 f"speed={self.args.playback:.2f}x"
             )
 
+        if getattr(self.args, "auto_optimize", False):
+            self._auto_optimize_detectors()
+
         return True
+
+    def _auto_optimize_detectors(self) -> None:
+        """Collect sample frames and adapt detector parameters."""
+        self.logger.info("[CONFIG] Auto-optimizing detector parameters...")
+        frames = []
+        target = int(getattr(self.args, "optimize_samples", 90) or 90)
+        deadline = time.time() + max(5.0, target / 15.0)
+
+        while len(frames) < target and time.time() < deadline:
+            ok, frame = self.app.camera.read(timeout=0.5)
+            if ok and frame is not None:
+                frames.append(frame.copy())
+
+        if not frames:
+            self.logger.warning("[CONFIG] Auto-optimization skipped (no frames captured)")
+            return
+
+        motion_cfg, dart_cfg, profile = self.environment_optimizer.optimize(
+            frames, self.app.motion.config, self.app.dart.config
+        )
+
+        self.app.motion = MotionDetector(motion_cfg)
+        self.app.dart = DartImpactDetector(dart_cfg)
+        self.app.environment_profile = profile
+        self.app.current_preset = profile.recommended_preset
+
+        if getattr(self.args, "persist_optimized", False):
+            self.detector_manager.save(motion_cfg, dart_cfg)
+            self.logger.info("[CONFIG] Optimized parameters persisted to YAML")
+        else:
+            self.logger.info("[CONFIG] Optimized parameters active for this session")
 
     def _init_heatmap(self):
         """Initialize heatmap accumulators if enabled."""

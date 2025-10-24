@@ -1,26 +1,16 @@
-"""
-Enhanced Motion Detector with Adaptive Gating
-CPU-efficient motion detection with dynamic threshold adaptation.
+"""Enhanced motion detector with serializable configuration."""
 
-NEW Features (v1.1.0):
-- Adaptive Otsu-Bias: Dynamic threshold based on frame brightness
-- Multi-Threshold Fusion: Parallel low/high thresholds for better recall
-- Temporal-Gate: Search mode after prolonged stillness
-- Frame brightness analysis for adaptive tuning
-
-Existing Features:
-- MOG2 background subtraction
-- Configurable sensitivity
-- Motion event tracking
-- Gating mechanism for CPU optimization
-"""
+from __future__ import annotations
 
 import cv2
 import numpy as np
 import logging
-from typing import Optional, Tuple, Callable, Any
-from dataclasses import dataclass
+from typing import Optional, Tuple, Callable, Any, Dict, TYPE_CHECKING
+from dataclasses import dataclass, asdict
 from collections import deque
+
+if TYPE_CHECKING:
+    from .config_schema import MotionConfigSchema
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +65,33 @@ class MotionConfig:
     search_mode_trigger_frames: int = 90  # No motion for 3 seconds → search mode
     search_mode_threshold_drop: int = 150  # Drop threshold by this amount
     search_mode_duration_frames: int = 30  # Stay in search mode for 1 second
+    log_search_mode_transitions: bool = False  # Optional verbose logging
+
+    @classmethod
+    def from_schema(cls, schema: "MotionConfigSchema | Dict[str, Any]") -> "MotionConfig":
+        """Create instance from Pydantic schema or raw dict."""
+        if hasattr(schema, "model_dump"):
+            data = schema.model_dump()
+        else:
+            data = dict(schema)
+        return cls(**data)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return dict representation suitable for YAML serialization."""
+        return asdict(self)
+
+    @classmethod
+    def from_schema(cls, schema: "MotionConfigSchema | Dict[str, Any]") -> "MotionConfig":
+        """Create instance from Pydantic schema or raw dict."""
+        if hasattr(schema, "model_dump"):
+            data = schema.model_dump()
+        else:
+            data = dict(schema)
+        return cls(**data)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return dict representation suitable for YAML serialization."""
+        return asdict(self)
 
 
 class MotionDetector:
@@ -200,7 +217,8 @@ class MotionDetector:
         if self.search_mode_active:
             if frame_index >= self.search_mode_end_frame:
                 self.search_mode_active = False
-                logger.debug(f"Search mode ended at frame {frame_index}")
+                if self.config.log_search_mode_transitions:
+                    logger.debug("Search mode ended at frame %s", frame_index)
             return self.search_mode_active
 
         # Check if we should enter search mode
@@ -214,7 +232,12 @@ class MotionDetector:
             self.search_mode_active = True
             self.search_mode_end_frame = frame_index + self.config.search_mode_duration_frames
             self.adaptive_stats["search_mode_activations"] += 1
-            logger.debug(f"Search mode activated at frame {frame_index} (no motion for {frames_since_motion} frames)")
+            if self.config.log_search_mode_transitions:
+                logger.debug(
+                    "Search mode activated at frame %s (no motion for %s frames)",
+                    frame_index,
+                    frames_since_motion,
+                )
             return True
 
         return False

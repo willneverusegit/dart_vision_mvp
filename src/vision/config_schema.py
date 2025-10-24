@@ -53,6 +53,7 @@ class MotionConfigSchema(BaseModel):
     search_mode_trigger_frames: int = Field(default=90, ge=30, le=300, description="Frames before search mode")
     search_mode_threshold_drop: int = Field(default=150, ge=50, le=400, description="Threshold drop in search mode")
     search_mode_duration_frames: int = Field(default=30, ge=10, le=120, description="Search mode duration")
+    log_search_mode_transitions: bool = Field(default=False, description="Log search mode transitions")
     
     @field_validator('morph_kernel_size')
     @classmethod

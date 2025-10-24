@@ -8,6 +8,8 @@ from .dart_impact_detector import (
     FieldMapper,
     FieldMapperConfig
 )
+from .detector_config_manager import DetectorConfigManager
+from .environment_optimizer import EnvironmentOptimizer, EnvironmentProfile
 
 __all__ = [
     'MotionDetector',
@@ -18,4 +20,7 @@ __all__ = [
     'DartImpact',
     'FieldMapper',
     'FieldMapperConfig',
+    'DetectorConfigManager',
+    'EnvironmentOptimizer',
+    'EnvironmentProfile',
 ]

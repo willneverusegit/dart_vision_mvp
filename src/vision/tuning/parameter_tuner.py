@@ -1,686 +1,632 @@
-"""
-Parameter Tuner - Interactive tool for finding optimal detection parameters.
+"""Guided parameter tuner with atomic config integration."""
 
-Features:
-- Live preview with side-by-side comparison
-- 80+ trackbars for all parameters
-- Real-time metrics dashboard
-- Debug overlays (masks, contours, metrics)
-- Preset system (load/save/compare)
-- Frame-by-frame navigation
-- Statistics tracking
+from __future__ import annotations
 
-Usage:
-    python -m src.vision.tuning.parameter_tuner --video path/to/video.mp4
-    # OR
-    python -m src.vision.tuning.parameter_tuner --webcam 0
-"""
+import argparse
+import logging
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
-import argparse
-import logging
-import yaml
-from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
-from dataclasses import dataclass, asdict
-from collections import deque
 
-from src.vision.detection import (
-    MotionDetector,
-    MotionConfig,
-    DartImpactDetector,
-    DartDetectorConfig,
-    apply_detector_preset,
-)
-from src.vision.tuning.tuning_visualizer import TuningVisualizer
-from src.vision.tuning.preset_manager import PresetManager
+from src.vision.motion_detector import MotionDetector, MotionConfig
+from src.vision.dart_impact_detector import DartImpactDetector, DartDetectorConfig, DartImpact
+from src.vision.detector_config_manager import DetectorConfigManager
+from src.vision.environment_optimizer import EnvironmentOptimizer, EnvironmentProfile
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class TuningConfig:
-    """Configuration for tuning session"""
     video_source: str = ""
     webcam_index: int = 0
     use_webcam: bool = False
     start_frame: int = 0
     loop_video: bool = True
-    show_debug: bool = True
-    window_width: int = 1800
+    window_width: int = 1600
     window_height: int = 900
-    preset_dir: str = "presets/detection"
+    detector_config: Path = Path("config/detectors.yaml")
+    optimize_samples: int = 120
+
+
+@dataclass
+class TrackbarSpec:
+    label: str
+    attr: str
+    min_value: float
+    max_value: float
+    step: float
+    target: str  # 'motion' or 'dart'
+    dtype: str = "float"
+    to_config: Optional[Callable[[float], float]] = None
+    from_config: Optional[Callable[[float], float]] = None
+
+    @property
+    def max_position(self) -> int:
+        return int(round((self.max_value - self.min_value) / self.step))
+
+    def to_position(self, value: float) -> int:
+        if self.from_config:
+            value = self.from_config(value)
+        if self.dtype == "bool":
+            return 1 if bool(value) else 0
+        pos = int(round((value - self.min_value) / self.step))
+        return int(np.clip(pos, 0, self.max_position))
+
+    def to_value(self, position: int) -> float:
+        position = int(np.clip(position, 0, self.max_position))
+        if self.dtype == "bool":
+            value = bool(position)
+        else:
+            value = self.min_value + position * self.step
+            if self.dtype == "int":
+                value = int(round(value))
+            else:
+                value = float(value)
+        if self.to_config:
+            value = self.to_config(value)
+        return value
+
+
+@dataclass
+class ParameterGroup:
+    name: str
+    description: str
+    specs: List[TrackbarSpec]
 
 
 class ParameterTuner:
-    """
-    Interactive parameter tuning tool for dart detection system.
-
-    Provides real-time parameter adjustment with visual feedback for:
-    - Motion detection parameters
-    - Dart detection parameters
-    - Shape analysis thresholds
-    - Filtering and preprocessing options
-    """
+    """Interactive guided tuner with presets and auto-optimization."""
 
     def __init__(self, config: TuningConfig):
-        """
-        Initialize parameter tuner.
-
-        Args:
-            config: Tuning configuration
-        """
         self.config = config
         self.logger = logging.getLogger("ParameterTuner")
 
-        # Video source
+        self.manager = DetectorConfigManager(config.detector_config)
+        self.optimizer = EnvironmentOptimizer()
+
+        self.motion_cfg: MotionConfig
+        self.dart_cfg: DartDetectorConfig
+        self.motion_detector: Optional[MotionDetector] = None
+        self.dart_detector: Optional[DartImpactDetector] = None
+
         self.cap: Optional[cv2.VideoCapture] = None
         self.total_frames = 0
         self.current_frame_idx = 0
         self.fps = 30.0
-
-        # Detectors
-        self.motion_detector: Optional[MotionDetector] = None
-        self.dart_detector: Optional[DartImpactDetector] = None
-
-        # Visualizer
-        self.visualizer = TuningVisualizer()
-
-        # Preset manager
-        self.preset_manager = PresetManager(Path(self.config.preset_dir))
-
-        # UI state
-        self.paused = True  # Start paused to allow parameter adjustment
-        self.show_trackbars = True
-        self.show_metrics = True
-        self.show_debug_overlays = True
-        self.current_preset = "balanced"
-
-        # Playback control
+        self.paused = True
+        self.frame_step = 0
+        self.loop_video = config.loop_video
         self.playback_speed = 1.0
-        self.frame_step = 0  # For frame-by-frame navigation
 
-        # Statistics
+        self.main_window = "Dart Detection"
+        self.controls_window = "Parameter Controls"
+        self.playback_window = "Playback"
+        self.dashboard_window = "Dashboard"
+
+        self.groups: List[ParameterGroup] = []
+        self.group_index = 0
+        self.trackbar_specs: Dict[str, TrackbarSpec] = {}
+
+        self.last_changed_param: Optional[str] = None
+        self.param_change_time: float = 0.0
+        self.config_dirty = False
+        self.env_profile: Optional[EnvironmentProfile] = None
+
         self.stats = {
-            "frames_processed": 0,
-            "motion_detected": 0,
-            "darts_detected": 0,
-            "false_positives": 0,
-            "avg_confidence": deque(maxlen=30),
+            "frames": 0,
+            "motion": 0,
+            "darts": 0,
         }
 
-        # Window names
-        self.main_window = "Dart Detection Tuner"
-        self.controls_window = "Parameters"
-        self.dashboard_window = "Parameter Dashboard"
+        self.last_frame: Optional[np.ndarray] = None
+        self.last_mask: Optional[np.ndarray] = None
 
-        # Dashboard state
-        self.last_trackbar_values: Dict[str, int] = {}
-        self.last_changed_param: Optional[str] = None
-        self.param_change_time = 0
-
+    # ------------------------------------------------------------------
+    # Initialization helpers
+    # ------------------------------------------------------------------
     def initialize(self) -> bool:
-        """
-        Initialize video source and detectors.
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # Open video source
-        if self.config.use_webcam:
-            self.cap = cv2.VideoCapture(self.config.webcam_index)
-            self.logger.info(f"Opened webcam {self.config.webcam_index}")
-        else:
-            if not Path(self.config.video_source).exists():
-                self.logger.error(f"Video file not found: {self.config.video_source}")
-                return False
-            self.cap = cv2.VideoCapture(self.config.video_source)
-            self.logger.info(f"Opened video: {self.config.video_source}")
-
-        if not self.cap.isOpened():
-            self.logger.error("Failed to open video source")
+        if not self._open_source():
             return False
 
-        # Get video properties
-        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
-        width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self.motion_cfg, self.dart_cfg = self.manager.get_configs()
+        self._define_groups()
+        self._update_detectors(force=True)
 
-        self.logger.info(
-            f"Video: {width}x{height} @ {self.fps:.1f}fps, "
-            f"{self.total_frames} frames"
-        )
+        cv2.namedWindow(self.main_window, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.main_window, self.config.window_width, self.config.window_height)
 
-        # Skip to start frame
+        self._create_playback_controls()
+        self._create_group_controls()
+        cv2.namedWindow(self.dashboard_window, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.dashboard_window, 520, 820)
+
         if self.config.start_frame > 0:
             self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.config.start_frame)
             self.current_frame_idx = self.config.start_frame
 
-        # Initialize detectors with default preset
-        self._load_preset(self.current_preset)
-
-        # Create windows
-        cv2.namedWindow(self.main_window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.main_window, self.config.window_width, self.config.window_height)
-
-        # Create trackbars
-        self._create_trackbars()
-
-        # Create dashboard window
-        cv2.namedWindow(self.dashboard_window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.dashboard_window, 600, 800)
-
-        # Initialize trackbar values
-        self._initialize_trackbar_values()
-
-        self.logger.info("Initialization complete. Press 'h' for help.")
+        self.logger.info("Initialization complete. SPACE=play/pause, arrows=switch groups, o=optimize")
         return True
 
-    def _load_preset(self, preset_name: str):
-        """Load a detection preset"""
-        self.logger.info(f"Loading preset: {preset_name}")
+    def _open_source(self) -> bool:
+        if self.config.use_webcam:
+            self.cap = cv2.VideoCapture(self.config.webcam_index)
+        else:
+            if not Path(self.config.video_source).exists():
+                self.logger.error("Video file not found: %s", self.config.video_source)
+                return False
+            self.cap = cv2.VideoCapture(self.config.video_source)
 
-        # Load motion config
-        motion_cfg = MotionConfig()
+        if not self.cap or not self.cap.isOpened():
+            self.logger.error("Failed to open video source")
+            return False
 
-        # Load dart config
-        dart_cfg = DartDetectorConfig()
-        dart_cfg = apply_detector_preset(dart_cfg, preset_name)
+        self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
+        self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30.0
+        return True
 
-        # Create detectors
-        self.motion_detector = MotionDetector(motion_cfg)
-        self.dart_detector = DartImpactDetector(dart_cfg)
+    def _define_groups(self) -> None:
+        motion_group = ParameterGroup(
+            name="Motion Sensitivity",
+            description="Steuert, wann Bewegung als relevant gilt.",
+            specs=[
+                TrackbarSpec("Var Threshold", "var_threshold", 10, 200, 1, "motion", "int"),
+                TrackbarSpec("Min Motion Pixels", "motion_pixel_threshold", 100, 5000, 50, "motion", "int"),
+                TrackbarSpec("Min Contour Area", "min_contour_area", 10, 1000, 10, "motion", "int"),
+                TrackbarSpec("Max Contour Area", "max_contour_area", 500, 30000, 250, "motion", "int"),
+                TrackbarSpec(
+                    "Morph Kernel", "morph_kernel_size", 1, 15, 2, "motion", "int",
+                    to_config=lambda v: int(v) | 1,
+                    from_config=lambda v: v
+                ),
+            ],
+        )
 
-        self.current_preset = preset_name
+        adaptive_group = ParameterGroup(
+            name="Motion Adaptivity",
+            description="Anpassung an Licht & Ruhephasen.",
+            specs=[
+                TrackbarSpec("Adaptive Otsu", "adaptive_otsu_enabled", 0, 1, 1, "motion", "bool"),
+                TrackbarSpec("Dark Threshold", "brightness_dark_threshold", 20, 120, 5, "motion"),
+                TrackbarSpec("Bright Threshold", "brightness_bright_threshold", 140, 240, 5, "motion"),
+                TrackbarSpec("Bias Dark", "otsu_bias_dark", -40, 0, 1, "motion", "int"),
+                TrackbarSpec("Bias Normal", "otsu_bias_normal", -20, 20, 1, "motion", "int"),
+                TrackbarSpec("Bias Bright", "otsu_bias_bright", 0, 40, 1, "motion", "int"),
+                TrackbarSpec("Search Trigger", "search_mode_trigger_frames", 30, 240, 10, "motion", "int"),
+                TrackbarSpec("Search Drop", "search_mode_threshold_drop", 50, 300, 10, "motion", "int"),
+            ],
+        )
 
-    def _create_trackbars(self):
-        """Create all parameter trackbars"""
+        dart_shape = ParameterGroup(
+            name="Dart Shape",
+            description="Konturen- und Formfilter.",
+            specs=[
+                TrackbarSpec("Min Area", "min_area", 5, 1500, 5, "dart", "int"),
+                TrackbarSpec("Max Area", "max_area", 200, 4000, 20, "dart", "int"),
+                TrackbarSpec(
+                    "Min AR (x100)", "min_aspect_ratio", 10, 80, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Max AR (x100)", "max_aspect_ratio", 120, 400, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Min Solidity", "min_solidity", 5, 95, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Max Solidity", "max_solidity", 50, 99, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Min Extent", "min_extent", 5, 60, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Max Extent", "max_extent", 30, 90, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Convexity (x100)", "convexity_min_ratio", 50, 95, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+            ],
+        )
+
+        temporal_group = ParameterGroup(
+            name="Temporal Logic",
+            description="Bestätigung & Cooldown.",
+            specs=[
+                TrackbarSpec("Confirm Frames", "confirmation_frames", 1, 8, 1, "dart", "int"),
+                TrackbarSpec("Pos Tolerance", "position_tolerance_px", 10, 50, 2, "dart", "int"),
+                TrackbarSpec("Cooldown Frames", "cooldown_frames", 10, 120, 5, "dart", "int"),
+                TrackbarSpec("Cooldown Radius", "cooldown_radius_px", 20, 120, 5, "dart", "int"),
+                TrackbarSpec("History Size", "candidate_history_size", 10, 80, 5, "dart", "int"),
+            ],
+        )
+
+        refine_group = ParameterGroup(
+            name="Refinement",
+            description="Feinjustierung der Trefferposition.",
+            specs=[
+                TrackbarSpec("Refine Enabled", "refine_enabled", 0, 1, 1, "dart", "bool"),
+                TrackbarSpec(
+                    "Refine Threshold", "refine_threshold", 10, 90, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec("Refine ROI", "refine_roi_size_px", 40, 160, 2, "dart", "int"),
+                TrackbarSpec("Tip Enabled", "tip_refine_enabled", 0, 1, 1, "dart", "bool"),
+                TrackbarSpec("Tip ROI", "tip_roi_px", 16, 80, 2, "dart", "int"),
+                TrackbarSpec("Tip Search", "tip_search_px", 6, 40, 1, "dart", "int"),
+                TrackbarSpec(
+                    "Tip Edge", "tip_edge_weight", 20, 90, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+                TrackbarSpec(
+                    "Tip Dark", "tip_dark_weight", 10, 90, 1, "dart",
+                    to_config=lambda v: round(v / 100.0, 2),
+                    from_config=lambda v: v * 100.0
+                ),
+            ],
+        )
+
+        self.groups = [motion_group, adaptive_group, dart_shape, temporal_group, refine_group]
+
+    def _create_playback_controls(self) -> None:
+        cv2.namedWindow(self.playback_window, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.playback_window, 420, 120)
+        cv2.createTrackbar("Paused", self.playback_window, 1, 1, lambda x: self._set_paused(bool(x)))
+        if self.total_frames > 0:
+            cv2.createTrackbar("Frame", self.playback_window, self.current_frame_idx,
+                               max(1, self.total_frames - 1), self._seek_frame)
+        cv2.createTrackbar("Speed x10", self.playback_window, 10, 30, self._change_speed)
+
+    def _create_group_controls(self) -> None:
+        try:
+            cv2.destroyWindow(self.controls_window)
+        except cv2.error:
+            pass
         cv2.namedWindow(self.controls_window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(self.controls_window, 600, 900)
+        cv2.resizeWindow(self.controls_window, 400, 640)
 
-        # Playback controls
-        cv2.createTrackbar("Paused", self.controls_window, 1, 1, self._on_pause)
-        cv2.createTrackbar("Frame", self.controls_window, 0, max(1, self.total_frames - 1), self._on_frame_seek)
-        cv2.createTrackbar("Speed", self.controls_window, 10, 30, self._on_speed)
+        self.trackbar_specs.clear()
+        group = self.groups[self.group_index]
+        for spec in group.specs:
+            target = self.motion_cfg if spec.target == "motion" else self.dart_cfg
+            current_value = getattr(target, spec.attr)
+            pos = spec.to_position(current_value)
+            cv2.createTrackbar(spec.label, self.controls_window, pos, spec.max_position,
+                               self._make_trackbar_callback(spec))
+            self.trackbar_specs[spec.label] = spec
 
-        # Preset selection
-        cv2.createTrackbar("Preset", self.controls_window, 1, 2, self._on_preset_change)
-        # 0=aggressive, 1=balanced, 2=stable
+    def _make_trackbar_callback(self, spec: TrackbarSpec) -> Callable[[int], None]:
+        def _callback(pos: int) -> None:
+            value = spec.to_value(pos)
+            target = self.motion_cfg if spec.target == "motion" else self.dart_cfg
+            setattr(target, spec.attr, value)
+            self.config_dirty = True
+            self.last_changed_param = spec.label
+            self.param_change_time = time.time()
+        return _callback
 
-        # Motion Detection Parameters
-        cv2.createTrackbar("Motion: Var Thresh", self.controls_window, 50, 200, lambda x: None)
-        cv2.createTrackbar("Motion: Min Pixels", self.controls_window, 500, 5000, lambda x: None)
-        cv2.createTrackbar("Motion: Morph Kernel", self.controls_window, 3, 15, lambda x: None)
+    def _set_paused(self, paused: bool) -> None:
+        self.paused = paused
 
-        # Dart Detection - Shape Constraints
-        cv2.createTrackbar("Dart: Min Area", self.controls_window, 10, 200, lambda x: None)
-        cv2.createTrackbar("Dart: Max Area", self.controls_window, 1000, 5000, lambda x: None)
-        cv2.createTrackbar("Dart: Min AR x10", self.controls_window, 3, 50, lambda x: None)  # Aspect ratio * 10
-        cv2.createTrackbar("Dart: Max AR x10", self.controls_window, 30, 80, lambda x: None)
+    def _seek_frame(self, value: int) -> None:
+        if not self.cap:
+            return
+        self.cap.set(cv2.CAP_PROP_POS_FRAMES, value)
+        self.current_frame_idx = value
+        self.frame_step = 1
 
-        # Dart Detection - Shape Heuristics
-        cv2.createTrackbar("Dart: Min Solidity x100", self.controls_window, 10, 100, lambda x: None)
-        cv2.createTrackbar("Dart: Max Solidity x100", self.controls_window, 50, 100, lambda x: None)
-        cv2.createTrackbar("Dart: Min Extent x100", self.controls_window, 5, 100, lambda x: None)
-        cv2.createTrackbar("Dart: Max Extent x100", self.controls_window, 30, 100, lambda x: None)
+    def _change_speed(self, value: int) -> None:
+        self.playback_speed = max(0.1, value / 10.0)
 
-        # Dart Detection - Edge & Convexity
-        cv2.createTrackbar("Dart: Min Edge Dens x100", self.controls_window, 2, 50, lambda x: None)
-        cv2.createTrackbar("Dart: Max Edge Dens x100", self.controls_window, 20, 60, lambda x: None)
-        cv2.createTrackbar("Dart: Convexity x100", self.controls_window, 70, 100, lambda x: None)
-        cv2.createTrackbar("Dart: Convex Gate", self.controls_window, 1, 1, lambda x: None)  # On/Off
-
-        # Dart Detection - Temporal
-        cv2.createTrackbar("Dart: Confirm Frames", self.controls_window, 3, 10, lambda x: None)
-        cv2.createTrackbar("Dart: Pos Tolerance", self.controls_window, 20, 80, lambda x: None)
-        cv2.createTrackbar("Dart: Cooldown Frames", self.controls_window, 30, 120, lambda x: None)
-
-        # Dart Detection - Preprocessing
-        cv2.createTrackbar("Dart: Adaptive", self.controls_window, 1, 1, lambda x: None)
-        cv2.createTrackbar("Dart: Otsu Bias", self.controls_window, 10, 30, lambda x: None)
-        cv2.createTrackbar("Dart: Morph Open", self.controls_window, 5, 15, lambda x: None)
-        cv2.createTrackbar("Dart: Morph Close", self.controls_window, 9, 21, lambda x: None)
-
-        # Display options
-        cv2.createTrackbar("Show: Debug", self.controls_window, 1, 1, lambda x: None)
-        cv2.createTrackbar("Show: Metrics", self.controls_window, 1, 1, lambda x: None)
-        cv2.createTrackbar("Show: Overlays", self.controls_window, 1, 1, lambda x: None)
-
-        self.logger.info("Trackbars created")
-
-    def _on_pause(self, val: int):
-        """Pause/unpause playback"""
-        self.paused = bool(val)
-
-    def _on_frame_seek(self, val: int):
-        """Seek to specific frame"""
-        if self.cap and 0 <= val < self.total_frames:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, val)
-            self.current_frame_idx = val
-            self.frame_step = 1  # Trigger a frame read
-
-    def _on_speed(self, val: int):
-        """Change playback speed"""
-        self.playback_speed = val / 10.0  # 0.1x to 3.0x
-
-    def _on_preset_change(self, val: int):
-        """Change detection preset"""
-        presets = ["aggressive", "balanced", "stable"]
-        if 0 <= val < len(presets):
-            self._load_preset(presets[val])
-            self.logger.info(f"Preset changed to: {presets[val]}")
-
-    def _read_trackbar_values(self) -> Tuple[MotionConfig, DartDetectorConfig]:
-        """Read all trackbar values and create configs"""
-        # Motion config
-        motion_cfg = MotionConfig(
-            var_threshold=cv2.getTrackbarPos("Motion: Var Thresh", self.controls_window),
-            motion_pixel_threshold=cv2.getTrackbarPos("Motion: Min Pixels", self.controls_window),
-            morph_kernel_size=cv2.getTrackbarPos("Motion: Morph Kernel", self.controls_window) | 1,  # Ensure odd
-        )
-
-        # Dart config
-        dart_cfg = DartDetectorConfig(
-            min_area=cv2.getTrackbarPos("Dart: Min Area", self.controls_window),
-            max_area=cv2.getTrackbarPos("Dart: Max Area", self.controls_window),
-            min_aspect_ratio=cv2.getTrackbarPos("Dart: Min AR x10", self.controls_window) / 10.0,
-            max_aspect_ratio=cv2.getTrackbarPos("Dart: Max AR x10", self.controls_window) / 10.0,
-            min_solidity=cv2.getTrackbarPos("Dart: Min Solidity x100", self.controls_window) / 100.0,
-            max_solidity=cv2.getTrackbarPos("Dart: Max Solidity x100", self.controls_window) / 100.0,
-            min_extent=cv2.getTrackbarPos("Dart: Min Extent x100", self.controls_window) / 100.0,
-            max_extent=cv2.getTrackbarPos("Dart: Max Extent x100", self.controls_window) / 100.0,
-            min_edge_density=cv2.getTrackbarPos("Dart: Min Edge Dens x100", self.controls_window) / 100.0,
-            max_edge_density=cv2.getTrackbarPos("Dart: Max Edge Dens x100", self.controls_window) / 100.0,
-            convexity_min_ratio=cv2.getTrackbarPos("Dart: Convexity x100", self.controls_window) / 100.0,
-            convexity_gate_enabled=bool(cv2.getTrackbarPos("Dart: Convex Gate", self.controls_window)),
-            confirmation_frames=cv2.getTrackbarPos("Dart: Confirm Frames", self.controls_window),
-            position_tolerance_px=cv2.getTrackbarPos("Dart: Pos Tolerance", self.controls_window),
-            cooldown_frames=cv2.getTrackbarPos("Dart: Cooldown Frames", self.controls_window),
-            motion_adaptive=bool(cv2.getTrackbarPos("Dart: Adaptive", self.controls_window)),
-            motion_otsu_bias=cv2.getTrackbarPos("Dart: Otsu Bias", self.controls_window),
-            morph_open_ksize=cv2.getTrackbarPos("Dart: Morph Open", self.controls_window) | 1,
-            morph_close_ksize=cv2.getTrackbarPos("Dart: Morph Close", self.controls_window) | 1,
-        )
-
-        # Display options
-        self.show_debug_overlays = bool(cv2.getTrackbarPos("Show: Overlays", self.controls_window))
-        self.show_metrics = bool(cv2.getTrackbarPos("Show: Metrics", self.controls_window))
-
-        return motion_cfg, dart_cfg
-
-    def _initialize_trackbar_values(self):
-        """Initialize trackbar values dictionary for change detection"""
-        trackbar_names = [
-            "Motion: Var Thresh", "Motion: Min Pixels", "Motion: Morph Kernel",
-            "Dart: Min Area", "Dart: Max Area", "Dart: Min AR x10", "Dart: Max AR x10",
-            "Dart: Min Solidity x100", "Dart: Max Solidity x100",
-            "Dart: Min Extent x100", "Dart: Max Extent x100",
-            "Dart: Min Edge Dens x100", "Dart: Max Edge Dens x100",
-            "Dart: Convexity x100", "Dart: Convex Gate",
-            "Dart: Confirm Frames", "Dart: Pos Tolerance", "Dart: Cooldown Frames",
-            "Dart: Adaptive", "Dart: Otsu Bias", "Dart: Morph Open", "Dart: Morph Close",
-        ]
-
-        for name in trackbar_names:
-            self.last_trackbar_values[name] = cv2.getTrackbarPos(name, self.controls_window)
-
-    def _detect_changed_parameter(self):
-        """Detect which parameter changed and update highlight"""
-        current_time = cv2.getTickCount() / cv2.getTickFrequency()
-
-        for name, last_val in self.last_trackbar_values.items():
-            current_val = cv2.getTrackbarPos(name, self.controls_window)
-            if current_val != last_val:
-                self.last_changed_param = name
-                self.param_change_time = current_time
-                self.last_trackbar_values[name] = current_val
-                break
-
-        # Clear highlight after 2 seconds
-        if current_time - self.param_change_time > 2.0:
-            self.last_changed_param = None
-
-    def _render_dashboard(self, motion_cfg: MotionConfig, dart_cfg: DartDetectorConfig):
-        """Render parameter dashboard with highlighted changed parameters"""
-        # Create canvas
-        dashboard = np.zeros((800, 600, 3), dtype=np.uint8)
-        dashboard[:] = (30, 30, 30)  # Dark gray background
-
-        y_offset = 30
-        line_height = 25
-        section_gap = 15
-
-        # Colors
-        color_header = (100, 200, 255)  # Orange-ish
-        color_normal = (200, 200, 200)  # Light gray
-        color_highlight = (0, 255, 0)  # Green
-        color_value = (150, 255, 255)  # Yellow
-
-        def draw_header(text, y):
-            cv2.putText(dashboard, text, (20, y), cv2.FONT_HERSHEY_SIMPLEX,
-                       0.7, color_header, 2, cv2.LINE_AA)
-            cv2.line(dashboard, (20, y + 5), (580, y + 5), color_header, 1)
-            return y + line_height + 10
-
-        def draw_param(name, value, trackbar_name, y):
-            # Support multiple trackbar names (e.g., for range parameters)
-            if isinstance(trackbar_name, (list, tuple)):
-                is_highlighted = any(self.last_changed_param == tn for tn in trackbar_name)
-            else:
-                is_highlighted = (self.last_changed_param == trackbar_name)
-
-            text_color = color_highlight if is_highlighted else color_normal
-
-            # Draw background highlight
-            if is_highlighted:
-                cv2.rectangle(dashboard, (10, y - 18), (590, y + 5), (0, 80, 0), -1)
-                cv2.rectangle(dashboard, (10, y - 18), (590, y + 5), color_highlight, 2)
-
-            # Draw parameter name
-            cv2.putText(dashboard, f"  {name}:", (20, y), cv2.FONT_HERSHEY_SIMPLEX,
-                       0.55, text_color, 2 if is_highlighted else 1, cv2.LINE_AA)
-
-            # Draw value
-            value_text = str(value)
-            cv2.putText(dashboard, value_text, (430, y), cv2.FONT_HERSHEY_SIMPLEX,
-                       0.55, color_value, 2 if is_highlighted else 1, cv2.LINE_AA)
-
-            return y + line_height
-
-        # Title
-        cv2.putText(dashboard, "PARAMETER DASHBOARD", (20, y_offset),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        y_offset += 30
-
-        # Motion Detection Section
-        y_offset = draw_header("MOTION DETECTION", y_offset)
-        y_offset = draw_param("Variance Threshold", motion_cfg.var_threshold,
-                             "Motion: Var Thresh", y_offset)
-        y_offset = draw_param("Min Motion Pixels", motion_cfg.motion_pixel_threshold,
-                             "Motion: Min Pixels", y_offset)
-        y_offset = draw_param("Morph Kernel Size", motion_cfg.morph_kernel_size,
-                             "Motion: Morph Kernel", y_offset)
-        y_offset += section_gap
-
-        # Dart Shape Constraints Section
-        y_offset = draw_header("DART SHAPE CONSTRAINTS", y_offset)
-        y_offset = draw_param("Min Area", dart_cfg.min_area, "Dart: Min Area", y_offset)
-        y_offset = draw_param("Max Area", dart_cfg.max_area, "Dart: Max Area", y_offset)
-        y_offset = draw_param("Aspect Ratio",
-                             f"{dart_cfg.min_aspect_ratio:.2f} - {dart_cfg.max_aspect_ratio:.2f}",
-                             ["Dart: Min AR x10", "Dart: Max AR x10"], y_offset)
-        y_offset = draw_param("Solidity",
-                             f"{dart_cfg.min_solidity:.2f} - {dart_cfg.max_solidity:.2f}",
-                             ["Dart: Min Solidity x100", "Dart: Max Solidity x100"], y_offset)
-        y_offset = draw_param("Extent",
-                             f"{dart_cfg.min_extent:.2f} - {dart_cfg.max_extent:.2f}",
-                             ["Dart: Min Extent x100", "Dart: Max Extent x100"], y_offset)
-        y_offset = draw_param("Edge Density",
-                             f"{dart_cfg.min_edge_density:.2f} - {dart_cfg.max_edge_density:.2f}",
-                             ["Dart: Min Edge Dens x100", "Dart: Max Edge Dens x100"], y_offset)
-        y_offset += section_gap
-
-        # Convexity Gate Section
-        y_offset = draw_header("CONVEXITY GATE", y_offset)
-        y_offset = draw_param("Enabled", "YES" if dart_cfg.convexity_gate_enabled else "NO",
-                             "Dart: Convex Gate", y_offset)
-        y_offset = draw_param("Min Convexity Ratio", f"{dart_cfg.convexity_min_ratio:.2f}",
-                             "Dart: Convexity x100", y_offset)
-        y_offset += section_gap
-
-        # Temporal Tracking Section
-        y_offset = draw_header("TEMPORAL TRACKING", y_offset)
-        y_offset = draw_param("Confirmation Frames", dart_cfg.confirmation_frames,
-                             "Dart: Confirm Frames", y_offset)
-        y_offset = draw_param("Position Tolerance", f"{dart_cfg.position_tolerance_px}px",
-                             "Dart: Pos Tolerance", y_offset)
-        y_offset = draw_param("Cooldown Frames", dart_cfg.cooldown_frames,
-                             "Dart: Cooldown Frames", y_offset)
-        y_offset += section_gap
-
-        # Preprocessing Section
-        y_offset = draw_header("PREPROCESSING", y_offset)
-        y_offset = draw_param("Adaptive Threshold", "YES" if dart_cfg.motion_adaptive else "NO",
-                             "Dart: Adaptive", y_offset)
-        y_offset = draw_param("Otsu Bias", dart_cfg.motion_otsu_bias,
-                             "Dart: Otsu Bias", y_offset)
-        y_offset = draw_param("Morph Open Kernel", dart_cfg.morph_open_ksize,
-                             "Dart: Morph Open", y_offset)
-        y_offset = draw_param("Morph Close Kernel", dart_cfg.morph_close_ksize,
-                             "Dart: Morph Close", y_offset)
-
-        # Footer hint
-        cv2.putText(dashboard, "Adjust trackbars to change parameters",
-                   (20, 780), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 100, 100), 1, cv2.LINE_AA)
-
-        cv2.imshow(self.dashboard_window, dashboard)
-
-    def run(self):
-        """Main tuning loop"""
+    # ------------------------------------------------------------------
+    # Runtime loop
+    # ------------------------------------------------------------------
+    def run(self) -> None:
         if not self.initialize():
             return
 
-        self.logger.info("Starting tuning session...")
-        self.logger.info("Press 'h' for help, 'q' to quit, SPACE to pause/unpause")
-
         while True:
-            # Read frame if not paused or if stepping
-            if not self.paused or self.frame_step > 0:
-                ret, frame = self.cap.read()
-
-                if not ret:
-                    if self.config.loop_video and not self.config.use_webcam:
-                        # Loop video
-                        self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        self.current_frame_idx = 0
-                        continue
-                    else:
-                        break
-
-                self.current_frame_idx += 1
-                self.frame_step = max(0, self.frame_step - 1)
-
-                # Update frame trackbar
-                cv2.setTrackbarPos("Frame", self.controls_window, self.current_frame_idx)
-            else:
-                # Use last frame
-                frame = getattr(self, '_last_frame', None)
-                if frame is None:
-                    # Read first frame
-                    ret, frame = self.cap.read()
-                    if not ret:
-                        break
-
-            # Store frame for pause mode
-            self._last_frame = frame.copy()
-
-            # Detect changed parameters for highlighting
-            self._detect_changed_parameter()
-
-            # Read trackbar values
-            motion_cfg, dart_cfg = self._read_trackbar_values()
-
-            # Render parameter dashboard
-            self._render_dashboard(motion_cfg, dart_cfg)
-
-            # Update detector configs
-            self.motion_detector.config = motion_cfg
-            self.dart_detector.config = dart_cfg
-
-            # Process frame
-            motion_detected, motion_event, fg_mask = self.motion_detector.detect_motion(
-                frame, self.current_frame_idx, self.current_frame_idx / self.fps
-            )
-
-            dart_impact = None
-            if motion_detected:
-                dart_impact = self.dart_detector.detect_dart(
-                    frame, fg_mask, self.current_frame_idx, self.current_frame_idx / self.fps
-                )
-
-            # Update stats
-            self.stats["frames_processed"] += 1
-            if motion_detected:
-                self.stats["motion_detected"] += 1
-            if dart_impact:
-                self.stats["darts_detected"] += 1
-                self.stats["avg_confidence"].append(dart_impact.confidence)
-
-            # Visualize
-            vis_frame = self.visualizer.create_visualization(
-                frame=frame,
-                fg_mask=fg_mask,
-                processed_mask=self.dart_detector.last_processed_mask,
-                motion_detected=motion_detected,
-                motion_event=motion_event,
-                dart_impact=dart_impact,
-                dart_candidate=self.dart_detector.current_candidate,
-                show_debug=self.show_debug_overlays,
-                show_metrics=self.show_metrics,
-                stats=self.stats,
-                detector_config=dart_cfg,
-            )
-
-            cv2.imshow(self.main_window, vis_frame)
-
-            # Handle keyboard
-            wait_time = 1 if self.paused else int(1000 / (self.fps * self.playback_speed))
-            key = cv2.waitKey(wait_time) & 0xFF
-
-            if key == ord('q'):
+            frame = self._read_frame()
+            if frame is None:
                 break
-            elif key == ord(' '):
-                self.paused = not self.paused
-                cv2.setTrackbarPos("Paused", self.controls_window, int(self.paused))
-            elif key == ord('h'):
-                self._show_help()
-            elif key == ord('s'):
-                self._save_current_preset()
-            elif key == ord('l'):
-                self._load_preset_dialog()
-            elif key == ord('r'):
-                self._reset_stats()
-            elif key == ord('.'):
-                # Step forward one frame
-                self.frame_step = 1
-                self.paused = False
-            elif key == ord(','):
-                # Step backward one frame
-                if self.current_frame_idx > 0:
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx - 1)
-                    self.current_frame_idx -= 1
-                    self.frame_step = 1
-                    self.paused = False
+
+            if self.config_dirty:
+                self._update_detectors()
+                self._sync_trackbars()
+
+            motion_detected, impact, mask = self._process_frame(frame)
+            self._render_dashboard(motion_detected, impact)
+
+            display = self._compose_display(frame, mask, impact)
+            cv2.imshow(self.main_window, display)
+
+            key = cv2.waitKeyEx(1)
+            if key != -1:
+                if self._handle_key(key):
+                    break
 
         self.cleanup()
 
-    def _show_help(self):
-        """Display help message"""
-        help_text = """
-        === Dart Detection Parameter Tuner ===
+    def _read_frame(self) -> Optional[np.ndarray]:
+        if not self.cap:
+            return None
 
-        Keyboard Shortcuts:
-        SPACE - Pause/Unpause
-        . - Step forward one frame
-        , - Step backward one frame
-        s - Save current parameters as preset
-        l - Load preset
-        r - Reset statistics
-        h - Show this help
-        q - Quit
+        if not self.paused or self.frame_step > 0:
+            ret, frame = self.cap.read()
+            if not ret:
+                if not self.config.use_webcam and self.loop_video:
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.current_frame_idx = 0
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        return None
+                else:
+                    return None
+            self.current_frame_idx += 1
+            self.frame_step = max(0, self.frame_step - 1)
+            if self.total_frames > 0:
+                cv2.setTrackbarPos("Frame", self.playback_window,
+                                   min(self.current_frame_idx, self.total_frames - 1))
+            self.last_frame = frame.copy()
+            return frame
+        return self.last_frame
 
-        Windows:
-        - Main Window: Live detection visualization
-        - Parameters: Trackbars for all settings
-        - Dashboard: Clear parameter display with highlighting
+    def _update_detectors(self, force: bool = False) -> None:
+        if not force and not self.config_dirty:
+            return
+        self.motion_detector = MotionDetector(self.motion_cfg)
+        self.dart_detector = DartImpactDetector(self.dart_cfg)
+        self.config_dirty = False
 
-        Dashboard Features:
-        - Grouped parameters by category
-        - Highlighted parameters (green) show recent changes
-        - Large, readable text
-        - Real-time value updates
+    def _sync_trackbars(self) -> None:
+        group = self.groups[self.group_index]
+        for spec in group.specs:
+            current_value = getattr(self.motion_cfg if spec.target == "motion" else self.dart_cfg, spec.attr)
+            pos = spec.to_position(current_value)
+            cv2.setTrackbarPos(spec.label, self.controls_window, pos)
 
-        Tips:
-        1. Start with a preset (aggressive/balanced/stable)
-        2. Watch the Parameter Dashboard while adjusting trackbars
-        3. Changed parameters highlight in green for 2 seconds
-        4. Adjust motion detection first (threshold, min pixels)
-        5. Fine-tune dart detection shape constraints
-        6. Use debug overlays to understand what's detected
-        7. Save working configurations as presets
-        """
-        self.logger.info(help_text)
-        print(help_text)
+    def _process_frame(self, frame: np.ndarray) -> Tuple[bool, Optional[DartImpact], Optional[np.ndarray]]:
+        if not self.motion_detector or not self.dart_detector:
+            return False, None, None
 
-    def _save_current_preset(self):
-        """Save current parameters as preset"""
-        motion_cfg, dart_cfg = self._read_trackbar_values()
+        timestamp = self.current_frame_idx / max(self.fps, 1e-3)
+        motion, event, mask = self.motion_detector.detect_motion(frame, self.current_frame_idx, timestamp)
+        if motion:
+            self.stats["motion"] += 1
+        impact = None
+        if motion:
+            impact = self.dart_detector.detect_dart(frame, mask, self.current_frame_idx, timestamp)
+            if impact:
+                self.stats["darts"] += 1
+        self.stats["frames"] += 1
+        self.last_mask = mask
+        return motion, impact, mask
 
-        preset_name = f"custom_{int(cv2.getTickCount())}"
-        preset_data = {
-            "motion": asdict(motion_cfg),
-            "dart": asdict(dart_cfg),
-        }
+    def _compose_display(self, frame: np.ndarray, mask: Optional[np.ndarray], impact: Optional[DartImpact]) -> np.ndarray:
+        display = frame.copy()
+        if impact:
+            cv2.circle(display, impact.position, 10, (0, 255, 0), 2)
+            cv2.putText(display, f"Dart {impact.confidence:.2f}", (impact.position[0] + 5, impact.position[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+        if mask is not None:
+            mask_rgb = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+            mask_rgb = cv2.applyColorMap(mask, cv2.COLORMAP_MAGMA)
+            mask_rgb = cv2.resize(mask_rgb, (frame.shape[1] // 3, frame.shape[0] // 3))
+            h, w, _ = mask_rgb.shape
+            display[0:h, 0:w] = mask_rgb
+        preset_names = ", ".join(self.manager.get_presets().keys()) or "none"
+        overlay_text = (
+            f"Presets: {preset_names} | Group [{self.group_index + 1}/{len(self.groups)}]"
+        )
+        cv2.putText(display, overlay_text, (10, display.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6, (255, 255, 255), 1, cv2.LINE_AA)
+        return display
 
-        filepath = self.preset_manager.save_preset(preset_name, preset_data)
-        self.logger.info(f"Saved preset: {filepath}")
+    def _render_dashboard(self, motion_detected: bool, impact: Optional[DartImpact]) -> None:
+        canvas = np.zeros((820, 520, 3), dtype=np.uint8)
+        canvas[:] = (25, 25, 25)
+        y = 30
+        cv2.putText(canvas, "PARAMETER DASHBOARD", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        y += 30
 
-    def _load_preset_dialog(self):
-        """Load preset from file"""
-        # List available presets
-        presets = self.preset_manager.list_presets()
-        self.logger.info(f"Available presets: {presets}")
-        # TODO: Implement file dialog or console input
+        group = self.groups[self.group_index]
+        cv2.putText(canvas, f"Group: {group.name}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (180, 220, 255), 2, cv2.LINE_AA)
+        y += 28
+        cv2.putText(canvas, group.description, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (180, 180, 180), 1, cv2.LINE_AA)
+        y += 32
 
-    def _reset_stats(self):
-        """Reset statistics"""
-        self.stats = {
-            "frames_processed": 0,
-            "motion_detected": 0,
-            "darts_detected": 0,
-            "false_positives": 0,
-            "avg_confidence": deque(maxlen=30),
-        }
-        self.logger.info("Statistics reset")
+        for spec in group.specs:
+            current_value = getattr(self.motion_cfg if spec.target == "motion" else self.dart_cfg, spec.attr)
+            label = spec.label
+            if label.endswith("x100") or label.startswith("Tip Edge") or label.startswith("Tip Dark") or label == "Refine Threshold":
+                display_value = f"{current_value:.2f}"
+            else:
+                display_value = f"{current_value}"
+            highlight = (self.last_changed_param == spec.label and
+                         (time.time() - self.param_change_time) < 2.0)
+            color = (0, 255, 0) if highlight else (220, 220, 220)
+            cv2.putText(canvas, f"{label:>20}: {display_value}", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                        color, 1 + int(highlight), cv2.LINE_AA)
+            y += 24
 
-    def cleanup(self):
-        """Cleanup resources"""
+        y += 12
+        cv2.line(canvas, (20, y), (500, y), (80, 80, 80), 1)
+        y += 24
+        status_text = f"Frame {self.current_frame_idx} | Motion={'YES' if motion_detected else 'no'} | Darts={self.stats['darts']}"
+        cv2.putText(canvas, status_text, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                    (200, 200, 200), 1, cv2.LINE_AA)
+        y += 26
+
+        if self.env_profile:
+            cv2.putText(canvas, "Environment", (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55,
+                        (100, 200, 255), 2, cv2.LINE_AA)
+            y += 24
+            cv2.putText(canvas,
+                        f"Brightness: {self.env_profile.mean_brightness:.1f} ± {self.env_profile.brightness_std:.1f}",
+                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
+            y += 22
+            cv2.putText(canvas, f"Motion score: {self.env_profile.motion_score:.2f} | Noise: {self.env_profile.noise_level:.2f}",
+                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 180, 180), 1, cv2.LINE_AA)
+            y += 22
+            cv2.putText(canvas, f"Suggested preset: {self.env_profile.recommended_preset}",
+                        (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1, cv2.LINE_AA)
+            y += 26
+
+        tips = [
+            "SPACE: Play/Pause | Arrows: Group | 1-5: Jump group",
+            "S: Save YAML | R: Reload YAML | O: Auto optimize",
+            "P: Cycle presets | Q: Quit",
+            "Ziel: Zuverlässige Treffererkennung & korrekte Punkte!",
+        ]
+        for tip in tips:
+            cv2.putText(canvas, tip, (20, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45,
+                        (160, 160, 160), 1, cv2.LINE_AA)
+            y += 20
+
+        cv2.imshow(self.dashboard_window, canvas)
+
+    def _handle_key(self, key: int) -> bool:
+        if key in (ord('q'), 27):
+            return True
+        if key == ord(' '):
+            self.paused = not self.paused
+            cv2.setTrackbarPos("Paused", self.playback_window, int(self.paused))
+        elif key == ord('.'):
+            self.frame_step = 1
+            self.paused = False
+        elif key == ord(','):
+            if self.cap and self.current_frame_idx > 1:
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, self.current_frame_idx - 2))
+                self.current_frame_idx = max(0, self.current_frame_idx - 2)
+                self.frame_step = 1
+                self.paused = False
+        elif key in (ord('['), 2424832):  # left arrow or '['
+            self.group_index = (self.group_index - 1) % len(self.groups)
+            self._create_group_controls()
+        elif key in (ord(']'), 2555904):  # right arrow or ']'
+            self.group_index = (self.group_index + 1) % len(self.groups)
+            self._create_group_controls()
+        elif key in (ord('1'), ord('2'), ord('3'), ord('4'), ord('5')):
+            idx = key - ord('1')
+            if 0 <= idx < len(self.groups):
+                self.group_index = idx
+                self._create_group_controls()
+        elif key == ord('s'):
+            self._save_config()
+        elif key == ord('r'):
+            self._reload_config()
+        elif key == ord('o'):
+            self._auto_optimize()
+        elif key == ord('p'):
+            self._cycle_preset()
+        return False
+
+    def _auto_optimize(self) -> None:
+        frames: List[np.ndarray] = []
+        if self.last_frame is not None:
+            frames.append(self.last_frame)
+        sample_target = max(30, self.config.optimize_samples)
+        while len(frames) < sample_target:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+            frames.append(frame)
+        if not frames:
+            self.logger.warning("Auto optimize skipped (no frames)")
+            return
+        motion_cfg, dart_cfg, profile = self.optimizer.optimize(frames, self.motion_cfg, self.dart_cfg)
+        self.motion_cfg = motion_cfg
+        self.dart_cfg = dart_cfg
+        self.env_profile = profile
+        self.config_dirty = True
+        self.logger.info("Auto optimization applied: preset %s", profile.recommended_preset)
+
+        if not self.config.use_webcam and self.cap:
+            rewind = max(0, self.current_frame_idx - len(frames))
+            self.cap.set(cv2.CAP_PROP_POS_FRAMES, rewind)
+            self.current_frame_idx = rewind
+            self.frame_step = 1
+
+    def _cycle_preset(self) -> None:
+        presets = list(self.manager.get_presets().keys())
+        if not presets:
+            self.logger.warning("No presets available in detector config")
+            return
+        if not hasattr(self, "_preset_index"):
+            self._preset_index = 0
+        else:
+            self._preset_index = (self._preset_index + 1) % len(presets)
+        name = presets[self._preset_index]
+        self.dart_cfg = self.manager.apply_preset(self.dart_cfg, name)
+        self.config_dirty = True
+        self.logger.info("Preset applied: %s", name)
+
+    def _save_config(self) -> None:
+        self.manager.save(self.motion_cfg, self.dart_cfg)
+        self.logger.info("Configuration saved to %s", self.manager.config_path)
+
+    def _reload_config(self) -> None:
+        cfg = self.manager.refresh()
+        self.motion_cfg = MotionConfig.from_schema(cfg.motion)
+        self.dart_cfg = DartDetectorConfig.from_schema(cfg.dart_detector)
+        self.config_dirty = True
+        self.logger.info("Configuration reloaded from disk")
+
+    def cleanup(self) -> None:
         if self.cap:
             self.cap.release()
         cv2.destroyAllWindows()
         self.logger.info("Tuning session ended")
 
 
-def main():
-    """CLI entry point"""
-    parser = argparse.ArgumentParser(description="Dart Detection Parameter Tuner")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Guided Dart Detection Parameter Tuner")
     parser.add_argument("--video", "-v", type=str, help="Video file path")
     parser.add_argument("--webcam", "-w", type=int, default=0, help="Webcam index")
     parser.add_argument("--start-frame", type=int, default=0, help="Start frame")
-    parser.add_argument("--preset-dir", type=str, default="presets/detection", help="Preset directory")
+    parser.add_argument("--detector-config", type=str, default="config/detectors.yaml",
+                        help="Detector config YAML")
+    parser.add_argument("--optimize-samples", type=int, default=120, help="Frames for auto optimizer")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args()
 
-    # Setup logging
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
-    # Create config
-    config = TuningConfig(
+    tuning_cfg = TuningConfig(
         video_source=args.video or "",
         webcam_index=args.webcam,
         use_webcam=(args.video is None),
         start_frame=args.start_frame,
-        preset_dir=args.preset_dir,
+        detector_config=Path(args.detector_config),
+        optimize_samples=args.optimize_samples,
     )
 
-    # Run tuner
-    tuner = ParameterTuner(config)
+    tuner = ParameterTuner(tuning_cfg)
     tuner.run()
 
 

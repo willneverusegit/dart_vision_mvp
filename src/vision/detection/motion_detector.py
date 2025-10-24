@@ -75,6 +75,7 @@ class MotionConfig:
     search_mode_trigger_frames: int = 90  # No motion for 3 seconds → search mode
     search_mode_threshold_drop: int = 150  # Drop threshold by this amount
     search_mode_duration_frames: int = 30  # Stay in search mode for 1 second
+    log_search_mode_transitions: bool = False  # Optional verbose logging
 
 
 class MotionDetector:
@@ -200,7 +201,8 @@ class MotionDetector:
         if self.search_mode_active:
             if frame_index >= self.search_mode_end_frame:
                 self.search_mode_active = False
-                logger.debug(f"Search mode ended at frame {frame_index}")
+                if self.config.log_search_mode_transitions:
+                    logger.debug("Search mode ended at frame %s", frame_index)
             return self.search_mode_active
 
         # Check if we should enter search mode
@@ -214,7 +216,12 @@ class MotionDetector:
             self.search_mode_active = True
             self.search_mode_end_frame = frame_index + self.config.search_mode_duration_frames
             self.adaptive_stats["search_mode_activations"] += 1
-            logger.debug(f"Search mode activated at frame {frame_index} (no motion for {frames_since_motion} frames)")
+            if self.config.log_search_mode_transitions:
+                logger.debug(
+                    "Search mode activated at frame %s (no motion for %s frames)",
+                    frame_index,
+                    frames_since_motion,
+                )
             return True
 
         return False

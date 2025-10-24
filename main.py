@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 from collections import deque
 from src.game.game import DemoGame, GameMode
-from src.vision.dart_impact_detector import apply_detector_preset
 
 
 # Board mapping/overlays/config
@@ -41,8 +40,8 @@ from src.capture import ThreadedCamera, CameraConfig, FPSCounter
 from src.calibration.roi_processor import ROIProcessor, ROIConfig
 from src.calibration.unified_calibrator import UnifiedCalibrator, CalibrationMethod
 from src.vision import (
-    MotionDetector, MotionConfig,
-    DartImpactDetector, DartDetectorConfig,
+    MotionDetector,
+    DartImpactDetector,
     FieldMapper, FieldMapperConfig
 )
 from src.utils.performance_profiler import PerformanceProfiler
@@ -910,14 +909,25 @@ def main():
     p.add_argument("--board-yaml", type=str, default="board.yaml",
                    help="Pfad zur Board-Geometrie (normierte Radien/Sektoren)")
 
-    p.add_argument("--motion-threshold", type=int, default=50, help="MOG2 variance threshold")
-    p.add_argument("--motion-pixels", type=int, default=500, help="Min motion pixels")
-    p.add_argument("--confirmation-frames", type=int, default=3, help="Frames to confirm dart")
+    p.add_argument("--detector-config", type=str, default="config/detectors.yaml",
+                   help="Detector config YAML (motion + dart)")
+    p.add_argument("--motion-threshold", type=int, default=None,
+                   help="Override motion variance threshold for this session")
+    p.add_argument("--motion-pixels", type=int, default=None,
+                   help="Override minimum motion pixels for this session")
+    p.add_argument("--confirmation-frames", type=int, default=None,
+                   help="Override dart confirmation frames for this session")
     p.add_argument("--load-yaml", type=str, default=None, help="Load calibration YAML on startup")
     p.add_argument("--clahe", action="store_true",
                    help="Enable CLAHE on grayscale for HUD/detection")
     p.add_argument("--detector-preset", type=str, choices=["aggressive", "balanced", "stable"],
-                   default="balanced", help="Dart detector preset")
+                   default=None, help="Apply preset overrides from config")
+    p.add_argument("--auto-optimize", action="store_true",
+                   help="Analyze startup frames and auto-adjust detector parameters")
+    p.add_argument("--optimize-samples", type=int, default=90,
+                   help="Frames to sample when auto-optimizing")
+    p.add_argument("--persist-optimized", action="store_true",
+                   help="Persist optimized parameters back to detector config")
     p.add_argument("--video-sync", choices=["off", "fps", "msec"], default="fps",
                    help="Playback-Synchronisation für Datei-Input: 'off' (so schnell wie möglich), 'fps' (per CAP_PROP_FPS), 'msec' (per Frame-Timestamp)")
     p.add_argument("--playback", type=float, default=1.0,

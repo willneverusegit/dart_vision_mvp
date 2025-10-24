@@ -1,27 +1,17 @@
-"""
-Enhanced Dart Impact Detector with Convexity-Gate
-Detects dart impacts using shape analysis, temporal stability, and convexity filtering.
+"""Enhanced dart impact detector with serializable configuration."""
 
-NEW Features (v1.1.0):
-- Convexity-Gate: Filter non-convex blobs (shadows, hands) via convex hull ratio
-- Hierarchy-Filter: Use cv2.RETR_TREE to prefer simple top-level contours
-- Pydantic-compatible config fields
-
-Existing Features:
-- Multi-frame confirmation (Land-and-Stick logic)
-- Shape-based dart detection with 5-metric scoring
-- False positive filtering via cooldown regions
-- Adaptive motion mask preprocessing (Otsu + Morphology)
-- Impact refinement (Hough lines + PCA tip detection)
-"""
+from __future__ import annotations
 
 import cv2
 import numpy as np
 import logging
 import math
-from typing import Optional, List, Tuple
-from dataclasses import dataclass, replace
+from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING
+from dataclasses import dataclass, replace, asdict
 from collections import deque
+
+if TYPE_CHECKING:
+    from .config_schema import DartDetectorConfigSchema
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +119,19 @@ class DartDetectorConfig:
     convexity_gate_enabled: bool = True
     convexity_min_ratio: float = 0.70  # Min convex_hull_area / contour_area
     hierarchy_filter_enabled: bool = True  # Prefer top-level contours
+
+    @classmethod
+    def from_schema(cls, schema: "DartDetectorConfigSchema | Dict[str, Any]") -> "DartDetectorConfig":
+        """Create config from Pydantic schema or raw dict."""
+        if hasattr(schema, "model_dump"):
+            data = schema.model_dump()
+        else:
+            data = dict(schema)
+        return cls(**data)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Return dict representation for YAML serialization."""
+        return asdict(self)
 
 
 # Presets
