@@ -1,0 +1,29 @@
+# NDT Feature Selection Pipeline - Requirements
+# Python 3.9+
+
+# Core Data Science
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# Machine Learning
+scikit-learn>=1.3.0
+
+# Feature Selection
+mrmr-selection>=0.2.8
+scikit-rebate>=0.62
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Jupyter
+jupyter>=1.0.0
+ipywidgets>=8.0.0
+notebook>=7.0.0
+
+# Progress Bars
+tqdm>=4.65.0
+
+# Statistical Analysis
+statsmodels>=0.14.0
